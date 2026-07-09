@@ -1,0 +1,12 @@
+{
+  "name": "mediasphere-server",
+  "version": "0.1.0",
+  "description": "MediaSphere 마스터 서버 - UDP 멀티캐스트 타임코드 브로드캐스트",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
