@@ -72,3 +72,8 @@ MediaSphere/
 - ExoPlayer seekTo()는 메인 스레드에서만 호출
 - MQTT 콜백에서 UI 수정 시 runOnUiThread 필수
 - 폰 1대/16대/500대 모두 같은 APK, config.json만 다름
+
+## Git 규칙
+각 기능 완성 후 내가 "커밋해줘"라고 하면
+적절한 메시지로 git commit 실행.
+자동 커밋은 하지 말 것.
