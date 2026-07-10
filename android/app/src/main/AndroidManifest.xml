@@ -2,12 +2,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 마스터 서버와 UDP/HTTP 통신을 위한 네트워크 권한 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- UDP 멀티캐스트 수신(MulticastLock)을 위해 필요 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 설치 환경에서 화면 꺼짐 방지를 위해 필요 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Scoped Storage 우회: /sdcard 영상 파일 접근을 위해 필요 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MediaSphere">

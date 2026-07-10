@@ -15,9 +15,12 @@ const HTTP_PORT = 3000;
 // isPlaying: 재생 중 여부
 // startAt: 재생이 시작된 기준 시각 (epoch ms). 폰은 이 값과 자신의 로컬 시각을
 //          비교해 재생 위치를 계산한다.
+// stoppedElapsedMs: 정지 시점의 elapsedMs. 정지 중에는 이 값을 그대로 내려보내
+//                   폰이 정지된 위치를 알 수 있게 한다.
 const state = {
   isPlaying: false,
-  startAt: null,
+  startAt: Date.now(),
+  stoppedElapsedMs: 0,
 };
 
 // ── UDP 멀티캐스트 소켓 초기화 ───────────────────────
@@ -33,20 +36,21 @@ udpSocket.on('error', (err) => {
   console.error('[UDP] 소켓 오류:', err);
 });
 
-// 30fps로 타임코드 패킷 발송 (isPlaying === true 일 때만)
+// 30fps로 타임코드 패킷 발송 (재생 여부와 무관하게 항상 발송 - isPlaying 필드로 상태를 알림)
 let tickCount = 0;
 
 function broadcastTimecode() {
-  if (!state.isPlaying) return;
-
   const masterMs = Date.now();
-  const elapsedMs = Math.max(0, masterMs - state.startAt);
+  const elapsedMs = state.isPlaying
+    ? Math.max(0, masterMs - state.startAt)
+    : state.stoppedElapsedMs;
 
   const packet = {
     type: 'TIMECODE',
     masterMs,
     elapsedMs,
     startAt: state.startAt,
+    isPlaying: state.isPlaying,
   };
 
   const buf = Buffer.from(JSON.stringify(packet));
@@ -57,7 +61,7 @@ function broadcastTimecode() {
   // 매 프레임 로그는 너무 많으므로 1초(30틱)마다 한 번만 출력
   tickCount += 1;
   if (tickCount % FPS === 0) {
-    console.log(`[UDP] 타임코드 발송 중 - elapsedMs=${elapsedMs}`);
+    console.log(`[UDP] 타임코드 발송 중 - isPlaying=${state.isPlaying}, elapsedMs=${elapsedMs}`);
   }
 }
 
@@ -77,19 +81,27 @@ app.post('/api/play', (req, res) => {
   res.json({ success: true, state });
 });
 
-// 재생 정지: isPlaying = false
+// 재생 정지: isPlaying = false, 정지 시점의 elapsedMs를 고정해둔다
 app.post('/api/stop', (req, res) => {
+  if (state.isPlaying) {
+    state.stoppedElapsedMs = Math.max(0, Date.now() - state.startAt);
+  }
   state.isPlaying = false;
 
-  console.log('[HTTP] 재생 정지');
+  console.log(`[HTTP] 재생 정지 - stoppedElapsedMs=${state.stoppedElapsedMs}`);
   res.json({ success: true, state });
 });
 
 // 현재 상태 조회
 app.get('/api/state', (req, res) => {
-  const elapsedMs = state.isPlaying ? Math.max(0, Date.now() - state.startAt) : 0;
+  const elapsedMs = state.isPlaying ? Math.max(0, Date.now() - state.startAt) : state.stoppedElapsedMs;
 
   res.json({ ...state, elapsedMs });
+});
+
+// 서버-폰 시간 오프셋 측정용 - 폰의 TimeSyncManager가 RTT 계산에 사용한다
+app.get('/api/time', (req, res) => {
+  res.json({ serverMs: Date.now() });
 });
 
 app.listen(HTTP_PORT, () => {

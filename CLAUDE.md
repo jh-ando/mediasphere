@@ -62,7 +62,7 @@ MediaSphere/
 ## 개발 단계
 - [x] Phase 0: 테스트 앱 성능 검증
         480p, CPU 40%, 온도 33도, 2시간 안정
-- [ ] Phase 1: 서버 기본 구조 + 폰 1대 동기화
+- [x] Phase 1: 서버 기본 구조 + 폰 1대 동기화
 - [ ] Phase 2: MQTT 제어 + 16대 확장
 - [ ] Phase 3: FFmpeg 파이프라인 + 역변환 보정
 - [ ] Phase 4: 모니터링 대시보드 + 500대
@@ -77,3 +77,8 @@ MediaSphere/
 각 기능 완성 후 내가 "커밋해줘"라고 하면
 적절한 메시지로 git commit 실행.
 자동 커밋은 하지 말 것.
+
+## 임시 구현 사항 (추후 변경 예정)
+- PLAY/STOP 제어: MQTT 대신 UDP 타임코드에
+  isPlaying 필드 임시 포함
+  → Phase 2에서 MQTT로 교체 예정
