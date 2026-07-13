@@ -1,0 +1,135 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #12151a;
+  color: #e6e8eb;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: #1a1e26;
+  border-bottom: 1px solid #262b35;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.5px;
+}
+
+.header-info {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 15px;
+}
+
+.play-state {
+  font-weight: 600;
+}
+
+.play-state.playing {
+  color: #3ddc84;
+}
+
+.play-state.stopped {
+  color: #8b93a1;
+}
+
+.timecode {
+  font-variant-numeric: tabular-nums;
+  color: #8b93a1;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+}
+
+.btn {
+  padding: 14px 48px;
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  letter-spacing: 1px;
+}
+
+.btn-play {
+  background: #3ddc84;
+  color: #0b1c12;
+}
+
+.btn-play:hover {
+  background: #34c876;
+}
+
+.btn-stop {
+  background: #e35d5d;
+  color: #2a0b0b;
+}
+
+.btn-stop:hover {
+  background: #d24c4c;
+}
+
+main {
+  padding: 0 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.grid-section h2,
+.offline-section h2 {
+  font-size: 14px;
+  color: #8b93a1;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 0 0 12px;
+}
+
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18px, 1fr));
+  gap: 3px;
+  max-width: 900px;
+}
+
+.device-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 3px;
+  background: #3a3f4a;
+  transition: background-color 0.2s ease;
+}
+
+.device-cell.online {
+  background: #3ddc84;
+}
+
+.device-cell.offline {
+  background: #3a3f4a;
+}
+
+.offline-section {
+  border-top: 1px solid #262b35;
+  padding-top: 16px;
+}
+
+.offline-list {
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: #8b93a1;
+  line-height: 1.6;
+}

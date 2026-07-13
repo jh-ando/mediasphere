@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mediasphere-server",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["src/server.js"],
+      "cwd": "server",
+      "port": 3000
+    }
+  ]
+}

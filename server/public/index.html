@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediaSphere 대시보드</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>MediaSphere</h1>
+    <div class="header-info">
+      <span id="online-count">온라인: 000 / 000</span>
+      <span id="play-state" class="play-state stopped">■ 정지</span>
+      <span id="timecode" class="timecode"></span>
+    </div>
+  </header>
+
+  <section class="controls">
+    <button id="btn-play" class="btn btn-play">PLAY</button>
+    <button id="btn-stop" class="btn btn-stop">STOP</button>
+  </section>
+
+  <main>
+    <section class="grid-section">
+      <h2>기기 현황</h2>
+      <div id="device-grid" class="device-grid"></div>
+    </section>
+
+    <section class="offline-section">
+      <h2>오프라인 기기</h2>
+      <div id="offline-list" class="offline-list">없음</div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

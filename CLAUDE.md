@@ -7,7 +7,11 @@
 미디어 설치 시스템.
 
 ## 현재 개발 단계
-Phase 1: 서버 기본 구조 + 폰 1대 동기화 테스트
+Phase 2: MQTT 제어 + 16대 확장
+- MQTT 정식 구현 완료
+- 대시보드 기본 UI 완료
+- Android heartbeat 완료
+- 진행 중: 패턴 모드 (점멸) 구현
 
 ## 아키텍처
 - 타임코드: UDP 멀티캐스트 239.0.0.1:5000 (30fps)
@@ -43,12 +47,57 @@ MediaSphere/
 ├── pipeline/      ← Python 영상 처리
 └── docs/          ← 문서
 
+## 앱 동작 모드
+두 가지 모드가 상호 배타적으로 동작.
+모드 전환 시 이전 모드는 완전히 비활성화.
+
+### 영상 모드 (기본)
+- ExoPlayer로 영상 재생
+- UDP 타임코드로 드리프트 보정
+- PatternView 숨김
+
+### 패턴 모드
+- ExoPlayer 정지 및 숨김
+- PatternView (전체화면 단색 View) 표시
+- ValueAnimator로 점멸 / 컬러 변화 제어
+- UDP 타임코드 수신 중단
+
 ## MQTT 토픽 구조
-- wall/control     : 서버 → 전체 (PLAY/STOP/LOAD/CHECK_UPDATE)
+- wall/control     : 서버 → 전체
 - wall/device/{id} : 서버 → 개별
-- wall/status/{id} : 폰 → 서버 (heartbeat)
+- wall/status/{id} : 폰 → 서버 (heartbeat, 5초마다)
 - wall/ready/{id}  : 폰 → 서버 (다운로드 완료)
 - wall/error/{id}  : 폰 → 서버 (오류)
+
+## MQTT 명령 타입 (wall/control)
+### 영상 모드
+- PLAY        : {"type":"PLAY","startAt":밀리초}
+- STOP        : {"type":"STOP","elapsedMs":밀리초}
+- LOAD        : {"type":"LOAD","filename":"xxx.mp4"}
+- CHECK_UPDATE: {"type":"CHECK_UPDATE"}
+
+### 모드 전환
+- MODE_VIDEO  : {"type":"MODE_VIDEO"}
+                영상 모드로 전환, 패턴 모드 비활성화
+- MODE_PATTERN: {"type":"MODE_PATTERN"}
+                패턴 모드로 전환, 영상 모드 비활성화
+
+### 패턴 모드
+- BLINK      : {"type":"BLINK","color":"#FFFFFF",
+                "interval":500,"duration":3000,
+                "startAt":밀리초}
+- BLINK_STOP : {"type":"BLINK_STOP"}
+               점멸 정지, 마지막 색상 유지
+- COLOR_CHANGE: {"type":"COLOR_CHANGE","color":"#RRGGBB",
+                 "startAt":밀리초}
+
+## HTTP API 엔드포인트
+- POST /api/play
+- POST /api/stop
+- POST /api/mode        {"mode":"video"|"pattern"}
+- POST /api/blink       {"color":"#FFFFFF","interval":500,"duration":3000}
+- POST /api/blink-stop
+- POST /api/color-change {"color":"#RRGGBB"}
 
 ## config.json 위치 (폰 내부)
 /sdcard/mediasphere/config.json
@@ -57,28 +106,39 @@ MediaSphere/
 - Node.js: CommonJS (require), async/await
 - Kotlin: Coroutine 기반 비동기
 - 주석: 한국어
-- 로그 태그: [UDP] [MQTT] [HTTP] [Player]
+- 로그 태그: [UDP] [MQTT] [HTTP] [Player] [Pattern]
 
 ## 개발 단계
 - [x] Phase 0: 테스트 앱 성능 검증
         480p, CPU 40%, 온도 33도, 2시간 안정
 - [x] Phase 1: 서버 기본 구조 + 폰 1대 동기화
 - [ ] Phase 2: MQTT 제어 + 16대 확장
+        [x] MQTT 정식 구현 (PLAY/STOP retain)
+        [x] 대시보드 기본 UI + 기기 그리드
+        [x] Android heartbeat 발행
+        [ ] 패턴 모드 (점멸)
+        [ ] 키오스크 HTTP POST 연동 테스트
+        [ ] 16대 스케일업 테스트
 - [ ] Phase 3: FFmpeg 파이프라인 + 역변환 보정
 - [ ] Phase 4: 모니터링 대시보드 + 500대
+
+## 클라이언트 요구사항
+- 점멸 패턴: 패턴 모드에서 화면 점멸
+- 스트레스 컬러 오버레이:
+    마이크 → baikal.ai API → 스트레스 지수 0.0~1.0
+    → COLOR_CHANGE 명령 → ValueAnimator 색상 변화
+    → startAt 절대시각으로 500대 동시 전환
+    baikal.ai API 스펙: 7/13 미팅 후 확정 예정
 
 ## 주의사항
 - WifiManager.MulticastLock 없으면 UDP 수신 안 됨
 - ExoPlayer seekTo()는 메인 스레드에서만 호출
 - MQTT 콜백에서 UI 수정 시 runOnUiThread 필수
 - 폰 1대/16대/500대 모두 같은 APK, config.json만 다름
+- 모드 전환 시 이전 모드 리소스 반드시 정리
+  (ExoPlayer pause + PatternView ValueAnimator cancel)
 
 ## Git 규칙
 각 기능 완성 후 내가 "커밋해줘"라고 하면
 적절한 메시지로 git commit 실행.
 자동 커밋은 하지 말 것.
-
-## 임시 구현 사항 (추후 변경 예정)
-- PLAY/STOP 제어: MQTT 대신 UDP 타임코드에
-  isPlaying 필드 임시 포함
-  → Phase 2에서 MQTT로 교체 예정

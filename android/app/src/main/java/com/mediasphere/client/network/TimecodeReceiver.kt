@@ -17,13 +17,13 @@ private const val MULTICAST_ADDR = "239.0.0.1"
 private const val MULTICAST_PORT = 5000
 private const val RECEIVE_BUFFER_SIZE = 512
 
-// 서버가 브로드캐스트하는 타임코드 패킷 { type, masterMs, elapsedMs, startAt, isPlaying }
+// 서버가 브로드캐스트하는 타임코드 패킷 { type, masterMs, elapsedMs, startAt }
+// PLAY/STOP 제어는 더 이상 이 패킷에 실리지 않는다 - MqttManager가 wall/control로 별도 수신한다.
 data class Timecode(
     val type: String,
     val masterMs: Long,
     val elapsedMs: Long,
     val startAt: Long,
-    val isPlaying: Boolean,
 )
 
 /**
@@ -112,7 +112,6 @@ class TimecodeReceiver(
                 masterMs = json.getLong("masterMs"),
                 elapsedMs = json.getLong("elapsedMs"),
                 startAt = json.getLong("startAt"),
-                isPlaying = json.getBoolean("isPlaying"),
             )
         } catch (e: Exception) {
             Log.e(TAG, "패킷 파싱 실패: $raw", e)
