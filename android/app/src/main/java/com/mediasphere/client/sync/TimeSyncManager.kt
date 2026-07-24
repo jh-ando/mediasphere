@@ -31,6 +31,9 @@ object TimeSyncManager {
     // 드리프트 계산 시 System.currentTimeMillis() 대신 이 값을 사용한다.
     fun now(): Long = System.currentTimeMillis() + offsetMs
 
+    // 재동기화 로그 등에서 현재 offsetMs 값을 확인할 때 사용한다.
+    fun currentOffsetMs(): Long = offsetMs
+
     suspend fun sync() {
         withContext(Dispatchers.IO) {
             val serverIp = readServerIp()

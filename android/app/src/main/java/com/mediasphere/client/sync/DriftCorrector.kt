@@ -1,6 +1,7 @@
 package com.mediasphere.client.sync
 
 import android.util.Log
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import kotlin.math.abs
 
@@ -55,7 +56,8 @@ object DriftCorrector {
 
         when {
             absDrift < DRIFT_IGNORE_MS -> {
-                // 정상 범위 - 로그 없음
+                // 정상 범위 - 이전에 속도 보정이 걸려있었을 수 있으니 정상 속도로 복원한다
+                player.playbackParameters = PlaybackParameters(SPEED_NORMAL)
             }
             absDrift <= DRIFT_TIER1_MS -> applySpeedCorrection(player, drift, SPEED_RATIO_TIER1, driftStr)
             absDrift <= DRIFT_TIER2_MS -> applySpeedCorrection(player, drift, SPEED_RATIO_TIER2, driftStr)

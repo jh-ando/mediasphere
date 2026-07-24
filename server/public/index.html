@@ -17,8 +17,38 @@
   </header>
 
   <section class="controls">
-    <button id="btn-play" class="btn btn-play">PLAY</button>
-    <button id="btn-stop" class="btn btn-stop">STOP</button>
+    <div class="mode-toggle">
+      <button id="mode-video" class="mode-btn active">영상 모드</button>
+      <button id="mode-pattern" class="mode-btn">패턴 모드</button>
+    </div>
+
+    <div id="video-controls" class="control-group">
+      <button id="btn-play" class="btn btn-play">PLAY</button>
+      <button id="btn-stop" class="btn btn-stop">STOP</button>
+    </div>
+
+    <div id="pattern-controls" class="control-group pattern-controls disabled">
+      <label class="pattern-field">
+        색상
+        <input type="color" id="pattern-color" value="#ffffff" disabled />
+      </label>
+      <label class="pattern-field">
+        주기(ms)
+        <input type="number" id="pattern-interval" min="50" step="50" value="500" disabled />
+      </label>
+      <label class="pattern-field">
+        지속시간(ms)
+        <input type="number" id="pattern-duration" min="0" step="500" value="3000" disabled />
+      </label>
+      <label class="pattern-field">
+        폰 간 딜레이 (ms)
+        <input type="number" id="pattern-step-delay" min="0" step="50" value="200" disabled />
+      </label>
+      <button id="btn-pattern-play" class="btn btn-play" disabled>Pattern PLAY</button>
+      <button id="btn-pattern-stop" class="btn btn-stop" disabled>Pattern STOP</button>
+      <button id="btn-sequence-play" class="btn btn-play" disabled>순차 점멸 시작</button>
+      <button id="btn-sequence-stop" class="btn btn-stop" disabled>순차 점멸 정지</button>
+    </div>
   </section>
 
   <main>

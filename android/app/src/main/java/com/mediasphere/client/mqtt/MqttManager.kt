@@ -38,6 +38,26 @@ sealed class MqttControlMessage {
     data class Stop(val elapsedMs: Long) : MqttControlMessage()
     data class Load(val video: String) : MqttControlMessage()
     object CheckUpdate : MqttControlMessage()
+
+    // 영상 모드 / 패턴 모드 전환
+    object ModeVideo : MqttControlMessage()
+    object ModePattern : MqttControlMessage()
+
+    // 패턴(점멸) 시작 - color는 "#RRGGBB" 형태의 원본 문자열 그대로 전달한다.
+    data class PatternStart(val color: String, val interval: Long, val duration: Long, val startAt: Long) :
+        MqttControlMessage()
+    object PatternStop : MqttControlMessage()
+
+    // 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
+    data class SequenceStart(
+        val color: String,
+        val interval: Long,
+        val duration: Long,
+        val stepDelay: Long,
+        val startAt: Long,
+        val totalDevices: Int,
+    ) : MqttControlMessage()
+    object SequenceStop : MqttControlMessage()
 }
 
 /**
@@ -51,6 +71,9 @@ class MqttManager(
     private var deviceId: Int = DEFAULT_DEVICE_ID
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // heartbeat에서 쓰는 것과 동일한 deviceId를 다른 곳(순차 점멸 등)에서도 재사용할 때 쓴다.
+    fun deviceId(): Int = deviceId
 
     fun connect() {
         val brokerUrl = readBrokerUrl()
@@ -137,6 +160,24 @@ class MqttManager(
                 "STOP" -> MqttControlMessage.Stop(elapsedMs = json.optLong("elapsedMs", 0L))
                 "LOAD" -> MqttControlMessage.Load(video = json.optString("video"))
                 "CHECK_UPDATE" -> MqttControlMessage.CheckUpdate
+                "MODE_VIDEO" -> MqttControlMessage.ModeVideo
+                "MODE_PATTERN" -> MqttControlMessage.ModePattern
+                "PATTERN_START" -> MqttControlMessage.PatternStart(
+                    color = json.getString("color"),
+                    interval = json.getLong("interval"),
+                    duration = json.getLong("duration"),
+                    startAt = json.getLong("startAt"),
+                )
+                "PATTERN_STOP" -> MqttControlMessage.PatternStop
+                "SEQUENCE_START" -> MqttControlMessage.SequenceStart(
+                    color = json.getString("color"),
+                    interval = json.getLong("interval"),
+                    duration = json.getLong("duration"),
+                    stepDelay = json.getLong("stepDelay"),
+                    startAt = json.getLong("startAt"),
+                    totalDevices = json.getInt("totalDevices"),
+                )
+                "SEQUENCE_STOP" -> MqttControlMessage.SequenceStop
                 else -> {
                     Log.e(TAG, "알 수 없는 type - $payload")
                     null

@@ -7,11 +7,7 @@
 미디어 설치 시스템.
 
 ## 현재 개발 단계
-Phase 2: MQTT 제어 + 16대 확장
-- MQTT 정식 구현 완료
-- 대시보드 기본 UI 완료
-- Android heartbeat 완료
-- 진행 중: 패턴 모드 (점멸) 구현
+Phase 3: FFmpeg 파이프라인 + 역변환 보정
 
 ## 아키텍처
 - 타임코드: UDP 멀티캐스트 239.0.0.1:5000 (30fps)
@@ -70,6 +66,7 @@ MediaSphere/
 - wall/error/{id}  : 폰 → 서버 (오류)
 
 ## MQTT 명령 타입 (wall/control)
+
 ### 영상 모드
 - PLAY        : {"type":"PLAY","startAt":밀리초}
 - STOP        : {"type":"STOP","elapsedMs":밀리초}
@@ -83,21 +80,25 @@ MediaSphere/
                 패턴 모드로 전환, 영상 모드 비활성화
 
 ### 패턴 모드
-- BLINK      : {"type":"BLINK","color":"#FFFFFF",
-                "interval":500,"duration":3000,
-                "startAt":밀리초}
-- BLINK_STOP : {"type":"BLINK_STOP"}
-               점멸 정지, 마지막 색상 유지
-- COLOR_CHANGE: {"type":"COLOR_CHANGE","color":"#RRGGBB",
-                 "startAt":밀리초}
+- PATTERN_START: {"type":"PATTERN_START","color":"#FFFFFF",
+                  "interval":500,"duration":3000,
+                  "startAt":밀리초}
+                 duration=0이면 무한 반복
+- PATTERN_STOP : {"type":"PATTERN_STOP"}
+                 점멸 정지, 마지막 색상 유지
+- COLOR_CHANGE : {"type":"COLOR_CHANGE","color":"#RRGGBB",
+                  "startAt":밀리초}
+                 (미구현 - baikal.ai 스펙 확정 후 진행)
 
 ## HTTP API 엔드포인트
 - POST /api/play
 - POST /api/stop
-- POST /api/mode        {"mode":"video"|"pattern"}
-- POST /api/blink       {"color":"#FFFFFF","interval":500,"duration":3000}
-- POST /api/blink-stop
-- POST /api/color-change {"color":"#RRGGBB"}
+- POST /api/mode           {"mode":"video"|"pattern"}
+- POST /api/pattern/config {"color":"#FFFFFF","interval":500,"duration":3000}
+                            (발행 없이 서버에 설정만 저장)
+- POST /api/pattern/start  (저장된 patternConfig로 PATTERN_START 발행)
+- POST /api/pattern/stop
+- POST /api/color-change   {"color":"#RRGGBB"} (미구현)
 
 ## config.json 위치 (폰 내부)
 /sdcard/mediasphere/config.json
@@ -112,23 +113,36 @@ MediaSphere/
 - [x] Phase 0: 테스트 앱 성능 검증
         480p, CPU 40%, 온도 33도, 2시간 안정
 - [x] Phase 1: 서버 기본 구조 + 폰 1대 동기화
-- [ ] Phase 2: MQTT 제어 + 16대 확장
+- [x] Phase 2: MQTT 제어 + 16대 확장
         [x] MQTT 정식 구현 (PLAY/STOP retain)
         [x] 대시보드 기본 UI + 기기 그리드
         [x] Android heartbeat 발행
-        [ ] 패턴 모드 (점멸)
-        [ ] 키오스크 HTTP POST 연동 테스트
-        [ ] 16대 스케일업 테스트
+        [x] 패턴 모드 (점멸)
+        [x] 16대 스케일업 테스트
 - [ ] Phase 3: FFmpeg 파이프라인 + 역변환 보정
+        [ ] 15대 분할 재생 테스트
+              3행 5열 평면 배치 (일정 간격)
+              원본 영상을 FFmpeg로 15개 영역으로 crop
+              각 폰이 자기 영역 영상만 재생
+              전체가 하나의 큰 화면처럼 보이는 것 확인
+              기존 UDP 타임코드 동기화 그대로 사용
+        [ ] 키오스크 연동 테스트
+              server/public/kiosk-test.html 제작
+              color picker로 HTTP POST /api/color-change 전송
+              → 서버 → MQTT COLOR_CHANGE → 폰 컬러 오버레이 확인
+              baikal.ai API 스펙 확정 전 모킹으로 진행
+        [ ] COLOR_CHANGE Android 구현 (baikal.ai 스펙 확정 후)
+        [ ] FFmpeg 파이프라인 구축
+        [ ] 역변환 보정
 - [ ] Phase 4: 모니터링 대시보드 + 500대
 
 ## 클라이언트 요구사항
-- 점멸 패턴: 패턴 모드에서 화면 점멸
+- 점멸 패턴: 패턴 모드에서 화면 점멸 ✅
 - 스트레스 컬러 오버레이:
     마이크 → baikal.ai API → 스트레스 지수 0.0~1.0
     → COLOR_CHANGE 명령 → ValueAnimator 색상 변화
     → startAt 절대시각으로 500대 동시 전환
-    baikal.ai API 스펙: 7/13 미팅 후 확정 예정
+    키오스크 → HTTP POST /api/color-change 방식 확정
 
 ## 주의사항
 - WifiManager.MulticastLock 없으면 UDP 수신 안 됨
@@ -137,6 +151,9 @@ MediaSphere/
 - 폰 1대/16대/500대 모두 같은 APK, config.json만 다름
 - 모드 전환 시 이전 모드 리소스 반드시 정리
   (ExoPlayer pause + PatternView ValueAnimator cancel)
+- 일부 Android 14 기기(3버튼 내비게이션)에서
+  전체화면 적용 시 systemUiVisibility 레거시 플래그
+  병행 적용 필요
 
 ## Git 규칙
 각 기능 완성 후 내가 "커밋해줘"라고 하면

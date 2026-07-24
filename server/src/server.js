@@ -4,6 +4,7 @@
 //          + WebSocket 대시보드 (기기 온라인 현황/재생 상태 브로드캐스트)
 
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const dgram = require('dgram');
 const express = require('express');
@@ -22,6 +23,7 @@ const MQTT_STATUS_TOPIC_FILTER = 'wall/status/+';
 const TOTAL_DEVICES = 500;
 const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline 처리
 const STATUS_BROADCAST_MS = 1000;
+const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
 
 // ── 재생 상태 ────────────────────────────────────────
 // isPlaying: 재생 중 여부
@@ -33,7 +35,41 @@ const state = {
   isPlaying: false,
   startAt: Date.now(),
   stoppedElapsedMs: 0,
+  // currentMode: "video" | "pattern" - 영상 모드/패턴 모드는 상호 배타적이다.
+  currentMode: 'video',
+  patternConfig: {
+    color: '#FFFFFF',
+    interval: 500,
+    duration: 3000,
+    stepDelay: 200,
+  },
 };
+
+// patternConfig를 pattern-config.json에 저장한다 (POST /api/pattern/config 호출 시마다).
+function savePatternConfig() {
+  try {
+    fs.mkdirSync(path.dirname(PATTERN_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(PATTERN_CONFIG_PATH, JSON.stringify(state.patternConfig, null, 2));
+  } catch (err) {
+    console.error('[HTTP] pattern-config.json 저장 실패:', err.message);
+  }
+}
+
+// 서버 시작 시 저장된 patternConfig가 있으면 불러온다. 없거나 파싱에 실패하면 기본값을 유지한다.
+function loadPatternConfig() {
+  if (!fs.existsSync(PATTERN_CONFIG_PATH)) return;
+
+  try {
+    // 기본값 위에 덮어써서 병합한다 - 예전 파일에 없는 새 필드(stepDelay 등)는 기본값을 유지한다.
+    const loaded = JSON.parse(fs.readFileSync(PATTERN_CONFIG_PATH));
+    state.patternConfig = { ...state.patternConfig, ...loaded };
+    console.log(`[HTTP] pattern-config.json 로드 완료 - ${JSON.stringify(state.patternConfig)}`);
+  } catch (err) {
+    console.error('[HTTP] pattern-config.json 파싱 실패 - 기본값 유지:', err.message);
+  }
+}
+
+loadPatternConfig();
 
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
@@ -121,15 +157,16 @@ mqttClient.on('message', (topic, payload) => {
   deviceLastSeen[deviceId] = Date.now();
 });
 
-// wall/control에 제어 명령을 발행한다. retain: true로 발행해서
-// 늦게 접속하거나 재연결한 폰도 마지막 상태(PLAY/STOP)를 즉시 받을 수 있게 한다.
-function publishControl(payload) {
+// wall/control에 제어 명령을 발행한다. 기본은 retain: true로 발행해서
+// 늦게 접속하거나 재연결한 폰도 마지막 상태(PLAY/STOP/모드)를 즉시 받을 수 있게 한다.
+// PATTERN_START/STOP처럼 "지금 이 순간의 동작"을 의미하는 명령은 retain: false로 발행한다.
+function publishControl(payload, { retain = true } = {}) {
   const message = JSON.stringify(payload);
-  mqttClient.publish(MQTT_CONTROL_TOPIC, message, { retain: true, qos: 1 }, (err) => {
+  mqttClient.publish(MQTT_CONTROL_TOPIC, message, { retain, qos: 1 }, (err) => {
     if (err) {
       console.error('[MQTT] 발행 오류:', err.message);
     } else {
-      console.log(`[MQTT] ${MQTT_CONTROL_TOPIC} 발행 - ${message}`);
+      console.log(`[MQTT] ${MQTT_CONTROL_TOPIC} 발행 (retain=${retain}) - ${message}`);
     }
   });
 }
@@ -164,6 +201,89 @@ app.post('/api/stop', (req, res) => {
 
   console.log(`[HTTP] 재생 정지 - stoppedElapsedMs=${state.stoppedElapsedMs}`);
   res.json({ success: true, state });
+});
+
+// 모드 전환: "video" | "pattern". MQTT로 MODE_VIDEO/MODE_PATTERN을 retain 발행한다.
+app.post('/api/mode', (req, res) => {
+  const { mode } = req.body;
+  if (mode !== 'video' && mode !== 'pattern') {
+    res.status(400).json({ success: false, error: 'mode는 "video" 또는 "pattern"이어야 합니다.' });
+    return;
+  }
+
+  state.currentMode = mode;
+  publishControl({ type: mode === 'video' ? 'MODE_VIDEO' : 'MODE_PATTERN' });
+
+  console.log(`[HTTP] 모드 전환 - ${mode}`);
+  res.json({ success: true, state });
+});
+
+// 패턴 설정 저장 (발행하지 않음 - PATTERN_START 시점에 이 값을 사용한다)
+app.post('/api/pattern/config', (req, res) => {
+  const { color, interval, duration, stepDelay } = req.body;
+  if (color !== undefined) state.patternConfig.color = color;
+  if (interval !== undefined) state.patternConfig.interval = interval;
+  if (duration !== undefined) state.patternConfig.duration = duration;
+  if (stepDelay !== undefined) state.patternConfig.stepDelay = stepDelay;
+  savePatternConfig();
+
+  console.log(`[HTTP] 패턴 설정 저장 - ${JSON.stringify(state.patternConfig)}`);
+  res.json({ success: true, patternConfig: state.patternConfig });
+});
+
+// 패턴(점멸) 시작 - 500ms 뒤를 startAt으로 잡아 폰들이 동시에 시작할 여유를 준다.
+app.post('/api/pattern/start', (req, res) => {
+  publishControl(
+    {
+      type: 'PATTERN_START',
+      color: state.patternConfig.color,
+      interval: state.patternConfig.interval,
+      duration: state.patternConfig.duration,
+      startAt: Date.now() + 500,
+    },
+    { retain: false },
+  );
+
+  console.log('[HTTP] 패턴 시작');
+  res.json({ success: true, patternConfig: state.patternConfig });
+});
+
+// 패턴(점멸) 정지 - 마지막 색상은 폰 쪽에서 유지한다.
+app.post('/api/pattern/stop', (req, res) => {
+  publishControl({ type: 'PATTERN_STOP' }, { retain: false });
+
+  console.log('[HTTP] 패턴 정지');
+  res.json({ success: true });
+});
+
+// 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
+// totalDevices는 현재 online 상태인 기기 수만 센다.
+app.post('/api/sequence/start', (req, res) => {
+  const totalDevices = Object.keys(deviceLastSeen).filter((id) => isDeviceOnline(id)).length;
+
+  publishControl(
+    {
+      type: 'SEQUENCE_START',
+      color: state.patternConfig.color,
+      interval: state.patternConfig.interval,
+      duration: state.patternConfig.duration,
+      stepDelay: state.patternConfig.stepDelay,
+      startAt: Date.now() + 500,
+      totalDevices,
+    },
+    { retain: false },
+  );
+
+  console.log(`[HTTP] 순차 점멸 시작 - totalDevices=${totalDevices}`);
+  res.json({ success: true, patternConfig: state.patternConfig, totalDevices });
+});
+
+// 순차 점멸 정지
+app.post('/api/sequence/stop', (req, res) => {
+  publishControl({ type: 'SEQUENCE_STOP' }, { retain: false });
+
+  console.log('[HTTP] 순차 점멸 정지');
+  res.json({ success: true });
 });
 
 // 현재 상태 조회
@@ -212,6 +332,8 @@ function buildStatusPayload() {
     total: TOTAL_DEVICES,
     devices,
     playState: state.isPlaying ? 'playing' : 'stopped',
+    currentMode: state.currentMode,
+    patternConfig: state.patternConfig,
   };
 
   if (state.isPlaying) {
