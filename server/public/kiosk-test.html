@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediaSphere 키오스크 테스트</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="kiosk.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>MediaSphere 키오스크 (테스트용)</h1>
+    <div class="header-info">
+      <span class="kiosk-badge">프로토콜 검증용 목업 - baikal.ai 미연동</span>
+    </div>
+  </header>
+
+  <main class="kiosk-main">
+    <section class="kiosk-panel">
+      <div class="input-mode-toggle">
+        <button id="mode-stress" class="mode-btn active">스트레스 슬라이더</button>
+        <button id="mode-color" class="mode-btn">컬러 피커 (디버그)</button>
+      </div>
+
+      <div id="stress-input" class="kiosk-input-group">
+        <label class="kiosk-label">스트레스 지수: <span id="stress-value">0.50</span></label>
+        <input type="range" id="stress-slider" min="0" max="1" step="0.01" value="0.5" />
+        <div class="stress-scale">
+          <span>0.00 (차분)</span>
+          <span>1.00 (긴장)</span>
+        </div>
+      </div>
+
+      <div id="color-input" class="kiosk-input-group hidden">
+        <label class="kiosk-label">색 직접 지정 (매핑 무시)</label>
+        <input type="color" id="color-picker" value="#4a7bc8" />
+      </div>
+
+      <div class="kiosk-preview">
+        <span>미리보기</span>
+        <span id="color-preview" class="color-preview"></span>
+      </div>
+
+      <button id="btn-send" class="btn btn-play kiosk-send">전송</button>
+
+      <div id="countdown" class="countdown"></div>
+    </section>
+
+    <section class="kiosk-panel">
+      <h2>최근 전송 이력 (최대 10건)</h2>
+      <table class="history-table">
+        <thead>
+          <tr><th>시각</th><th>스트레스</th><th>색</th><th>상태</th></tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="kiosk.js"></script>
+</body>
+</html>
