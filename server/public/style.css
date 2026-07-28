@@ -48,6 +48,37 @@ body {
   color: #8b93a1;
 }
 
+.color-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: #3a3f4a;
+  border: 1px solid #2f3542;
+}
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #2f3542;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #1a1e26;
+  color: #8b93a1;
+}
+
+.btn-small:hover {
+  background: #2f3542;
+  color: #e6e8eb;
+}
+
 .controls {
   display: flex;
   flex-direction: column;

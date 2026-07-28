@@ -20,6 +20,9 @@ const btnPatternPlay = document.getElementById('btn-pattern-play');
 const btnPatternStop = document.getElementById('btn-pattern-stop');
 const btnSequencePlay = document.getElementById('btn-sequence-play');
 const btnSequenceStop = document.getElementById('btn-sequence-stop');
+const colorSwatchEl = document.getElementById('color-swatch');
+const colorLabelEl = document.getElementById('color-label');
+const btnColorReset = document.getElementById('btn-color-reset');
 
 // 패턴 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
@@ -27,6 +30,7 @@ let editingPatternConfig = false;
 // 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
 let lastDevices = {};
+let lastColor = null;
 
 function ensureGrid(deviceIds) {
   if (cellRefs) return;
@@ -58,6 +62,8 @@ function applyStatusUpdate(data) {
     timecodeEl.style.display = 'none';
   }
 
+  const currentColorHex = data.currentColor && data.currentColor.color;
+
   const offlineIds = [];
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
@@ -68,6 +74,7 @@ function applyStatusUpdate(data) {
       if (cell) {
         cell.classList.toggle('online', status === 'online');
         cell.classList.toggle('offline', status === 'offline');
+        cell.style.backgroundColor = status === 'online' && currentColorHex ? currentColorHex : '';
       }
     }
 
@@ -76,6 +83,19 @@ function applyStatusUpdate(data) {
   lastDevices = data.devices;
 
   offlineListEl.textContent = offlineIds.length > 0 ? offlineIds.join(', ') : '없음';
+
+  // 컬러 자체가 바뀐 경우엔 상태가 그대로인 online 셀들도 다시 칠해야 한다.
+  if (currentColorHex !== lastColor) {
+    Object.keys(data.devices).forEach((id) => {
+      if (data.devices[id] !== 'online') return;
+      const cell = cellRefs[id];
+      if (cell) cell.style.backgroundColor = currentColorHex || '';
+    });
+    lastColor = currentColorHex;
+  }
+
+  colorSwatchEl.style.backgroundColor = currentColorHex || '';
+  colorLabelEl.textContent = currentColorHex ? `컬러: ${currentColorHex}` : '컬러: 없음';
 
   if (data.currentMode) setModeUi(data.currentMode);
 
@@ -197,6 +217,10 @@ btnSequencePlay.addEventListener('click', () => {
 
 btnSequenceStop.addEventListener('click', () => {
   fetch('/api/sequence/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 순차 점멸 정지 요청 실패', err));
+});
+
+btnColorReset.addEventListener('click', () => {
+  fetch('/api/color-reset', { method: 'POST' }).catch((err) => console.error('[HTTP] 컬러 초기화 요청 실패', err));
 });
 
 connect();
