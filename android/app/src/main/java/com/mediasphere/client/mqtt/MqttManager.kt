@@ -26,6 +26,8 @@ private const val DEFAULT_BROKER_URL = "tcp://192.168.0.1:1883"
 private const val DEFAULT_DEVICE_ID = -1
 private const val CONTROL_TOPIC = "wall/control"
 private const val CONTROL_QOS = 1
+private const val COLOR_STATE_TOPIC = "wall/state/color"
+private const val COLOR_STATE_QOS = 1
 private const val STATUS_TOPIC_PREFIX = "wall/status/"
 private const val STATUS_QOS = 0
 private const val HEARTBEAT_INTERVAL_MS = 5000L
@@ -58,6 +60,14 @@ sealed class MqttControlMessage {
         val totalDevices: Int,
     ) : MqttControlMessage()
     object SequenceStop : MqttControlMessage()
+
+    // 키오스크 스트레스 컬러 오버레이 - wall/control로 오는 실시간 명령 (startAt까지 대기 후 적용)
+    data class ColorChange(val color: String, val startAt: Long, val duration: Long) : MqttControlMessage()
+    data class ColorClear(val startAt: Long) : MqttControlMessage()
+
+    // wall/state/color(retain) - 재접속/재부팅 시 애니메이션 없이 즉시 적용하기 위한 현재 상태
+    data class ColorState(val color: String) : MqttControlMessage()
+    object ColorStateCleared : MqttControlMessage()
 }
 
 /**
@@ -90,6 +100,7 @@ class MqttManager(
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
                     Log.d(TAG, if (reconnect) "브로커 재연결 성공 - $serverURI" else "브로커 연결 성공 - $serverURI")
                     subscribeControl()
+                    subscribeColorState()
                     startHeartbeat()
                 }
 
@@ -101,7 +112,11 @@ class MqttManager(
                 override fun messageArrived(topic: String?, message: MqttMessage?) {
                     val payload = message?.toString() ?: return
                     Log.d(TAG, "메시지 수신 - topic=$topic, payload=$payload")
-                    parseControlMessage(payload)?.let(onControl)
+                    when (topic) {
+                        CONTROL_TOPIC -> parseControlMessage(payload)?.let(onControl)
+                        COLOR_STATE_TOPIC -> parseColorState(payload)?.let(onControl)
+                        else -> Log.e(TAG, "알 수 없는 topic - $topic")
+                    }
                 }
 
                 override fun deliveryComplete(token: IMqttDeliveryToken?) {}
@@ -152,6 +167,27 @@ class MqttManager(
         }
     }
 
+    private fun subscribeColorState() {
+        try {
+            client?.subscribe(
+                COLOR_STATE_TOPIC,
+                COLOR_STATE_QOS,
+                null,
+                object : IMqttActionListener {
+                    override fun onSuccess(asyncActionToken: IMqttToken?) {
+                        Log.d(TAG, "구독 완료 - $COLOR_STATE_TOPIC")
+                    }
+
+                    override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                        Log.e(TAG, "구독 실패 - $COLOR_STATE_TOPIC", exception)
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "구독 요청 실패 - $COLOR_STATE_TOPIC", e)
+        }
+    }
+
     private fun parseControlMessage(payload: String): MqttControlMessage? {
         return try {
             val json = JSONObject(payload)
@@ -178,6 +214,12 @@ class MqttManager(
                     totalDevices = json.getInt("totalDevices"),
                 )
                 "SEQUENCE_STOP" -> MqttControlMessage.SequenceStop
+                "COLOR_CHANGE" -> MqttControlMessage.ColorChange(
+                    color = json.getString("color"),
+                    startAt = json.getLong("startAt"),
+                    duration = json.getLong("duration"),
+                )
+                "COLOR_CLEAR" -> MqttControlMessage.ColorClear(startAt = json.getLong("startAt"))
                 else -> {
                     Log.e(TAG, "알 수 없는 type - $payload")
                     null
@@ -185,6 +227,18 @@ class MqttManager(
             }
         } catch (e: Exception) {
             Log.e(TAG, "메시지 파싱 실패: $payload", e)
+            null
+        }
+    }
+
+    // wall/state/color(retain) 전용 파서 - 빈 payload는 삭제(clear)를 의미한다.
+    private fun parseColorState(payload: String): MqttControlMessage? {
+        if (payload.isEmpty()) return MqttControlMessage.ColorStateCleared
+        return try {
+            val json = JSONObject(payload)
+            MqttControlMessage.ColorState(color = json.getString("color"))
+        } catch (e: Exception) {
+            Log.e(TAG, "컬러 상태 파싱 실패: $payload", e)
             null
         }
     }

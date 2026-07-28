@@ -11,6 +11,16 @@
         android:layout_height="match_parent"
         android:visibility="visible" />
 
+    <!-- 키오스크 스트레스 컬러 오버레이 - playerView 위, patternView 아래.
+         patternView가 보일 땐 위에서 덮으므로 자연히 가려지지만, 모드 전환 시
+         명시적으로 alpha=0 처리도 함께 한다 (이중 안전장치). -->
+    <View
+        android:id="@+id/colorOverlayView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:visibility="visible" />
+
     <!-- 패턴 모드: 전체화면 단색, PatternAnimator가 alpha를 제어한다 -->
     <View
         android:id="@+id/patternView"

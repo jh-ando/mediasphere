@@ -1,5 +1,7 @@
 package com.mediasphere.client
 
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -34,6 +36,7 @@ import com.mediasphere.client.sync.TimeSyncManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.File
 
 private const val TAG = "[Player]"
@@ -41,6 +44,8 @@ private const val PATTERN_TAG = "[Pattern]"
 private const val VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
 private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 대기 시간 - 초기 drift가 크게 나는 것을 방지
 private const val TIME_SYNC_INTERVAL_MS = 60_000L // TimeSyncManager 재동기화 주기 (1분)
+private const val CONFIG_PATH = "/sdcard/mediasphere/config.json"
+private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN }
@@ -50,8 +55,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
     private lateinit var patternView: View
+    private lateinit var colorOverlayView: View
     private lateinit var timecodeReceiver: TimecodeReceiver
     private lateinit var mqttManager: MqttManager
+
+    // 키오스크 스트레스 컬러 오버레이 설정/상태
+    private var colorOverlayAlpha: Float = DEFAULT_COLOR_OVERLAY_ALPHA
+    private var currentOverlayColor: Int = Color.BLACK
+    private var colorAnimator: ValueAnimator? = null
+
+    // COLOR_CHANGE/COLOR_CLEAR의 startAt까지 대기하는 코루틴 - 새 명령이 오면 이전 대기를 취소한다
+    private var pendingColorJob: Job? = null
 
     // 실제로 play()가 호출되었는지 여부 - true가 되기 전까지는 드리프트 보정을 하지 않는다
     private var playbackStarted = false
@@ -132,7 +146,9 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         playerView = findViewById(R.id.playerView)
         patternView = findViewById(R.id.patternView)
+        colorOverlayView = findViewById(R.id.colorOverlayView)
         PatternAnimator.attach(patternView)
+        colorOverlayAlpha = readColorOverlayAlpha()
 
         // 서버-폰 시간 오프셋 측정 - 최초 1회 실행 후 1분마다 재동기화 (폰 시계 드리프트 누적 방지)
         lifecycleScope.launch {
@@ -231,9 +247,22 @@ class MainActivity : ComponentActivity() {
         timecodeReceiver.stop()
         mqttManager.disconnect()
         PatternAnimator.stop()
+        pendingColorJob?.cancel()
+        colorAnimator?.cancel()
         unregisterReceiver(timeChangeReceiver)
         player.release()
         super.onDestroy()
+    }
+
+    // config.json에서 colorOverlayAlpha 값을 읽는다. 실패하면 기본값을 사용한다.
+    private fun readColorOverlayAlpha(): Float {
+        return try {
+            val json = JSONObject(File(CONFIG_PATH).readText())
+            json.optDouble("colorOverlayAlpha", DEFAULT_COLOR_OVERLAY_ALPHA.toDouble()).toFloat()
+        } catch (e: Exception) {
+            Log.e(TAG, "config.json 읽기 실패 - colorOverlayAlpha 기본값($DEFAULT_COLOR_OVERLAY_ALPHA) 사용", e)
+            DEFAULT_COLOR_OVERLAY_ALPHA
+        }
     }
 
     // wall/control로 수신한 MQTT 명령을 처리한다.
@@ -259,6 +288,7 @@ class MainActivity : ComponentActivity() {
                     player.seekTo(targetPos)
                 }
                 player.pause()
+                clearColorOverlay()
                 Log.d(TAG, "재생 정지: MQTT STOP 수신 (elapsedMs=${message.elapsedMs})")
             }
             is MqttControlMessage.Load -> {
@@ -273,6 +303,10 @@ class MainActivity : ComponentActivity() {
             MqttControlMessage.PatternStop -> handlePatternStop()
             is MqttControlMessage.SequenceStart -> handleSequenceStart(message)
             MqttControlMessage.SequenceStop -> handleSequenceStop()
+            is MqttControlMessage.ColorChange -> handleColorChange(message)
+            is MqttControlMessage.ColorClear -> handleColorClear(message)
+            is MqttControlMessage.ColorState -> handleColorState(message)
+            MqttControlMessage.ColorStateCleared -> handleColorStateCleared()
         }
     }
 
@@ -309,6 +343,7 @@ class MainActivity : ComponentActivity() {
         playbackStarted = false
         pendingStartAt = null
         currentMode = Mode.PATTERN
+        clearColorOverlay()
 
         // 모드 전환은 뷰 visibility만 바꾸는 것이라 시스템 insets 콜백이 다시 불리지 않는다.
         // 그 사이 시스템 바가 떠 있었다면 패턴 뷰가 그 영역까지 못 채우므로 여기서 명시적으로 재적용한다.
@@ -388,6 +423,74 @@ class MainActivity : ComponentActivity() {
         pendingSequenceJob?.cancel()
         PatternAnimator.stop()
         Log.d(PATTERN_TAG, "순차 점멸 정지: 마지막 색상 유지")
+    }
+
+    // 키오스크 COLOR_CHANGE - startAt까지 대기한 뒤 ValueAnimator로 현재 색상에서 새 색상으로 전환한다.
+    private fun handleColorChange(message: MqttControlMessage.ColorChange) {
+        val newColor = try {
+            Color.parseColor(message.color)
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "컬러 파싱 실패 - ${message.color}", e)
+            return
+        }
+
+        pendingColorJob?.cancel()
+        pendingColorJob = lifecycleScope.launch {
+            val delayMs = message.startAt - TimeSyncManager.now()
+            if (delayMs > 0) delay(delayMs)
+            animateColorOverlay(newColor, message.duration)
+        }
+    }
+
+    private fun animateColorOverlay(toColor: Int, duration: Long) {
+        colorAnimator?.cancel()
+        val animator = ValueAnimator.ofObject(ArgbEvaluator(), currentOverlayColor, toColor)
+        animator.duration = duration
+        animator.addUpdateListener { anim ->
+            val color = anim.animatedValue as Int
+            colorOverlayView.setBackgroundColor(color)
+            currentOverlayColor = color
+        }
+        colorAnimator = animator
+        colorOverlayView.alpha = colorOverlayAlpha
+        animator.start()
+    }
+
+    // 키오스크 COLOR_CLEAR - startAt까지 대기한 뒤 오버레이를 즉시 끈다 (애니메이션 없음).
+    private fun handleColorClear(message: MqttControlMessage.ColorClear) {
+        pendingColorJob?.cancel()
+        pendingColorJob = lifecycleScope.launch {
+            val delayMs = message.startAt - TimeSyncManager.now()
+            if (delayMs > 0) delay(delayMs)
+            clearColorOverlay()
+        }
+    }
+
+    // wall/state/color(retain) - 재접속/재부팅 시 애니메이션 없이 즉시 현재 색상을 반영한다.
+    private fun handleColorState(message: MqttControlMessage.ColorState) {
+        val color = try {
+            Color.parseColor(message.color)
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "컬러 파싱 실패 - ${message.color}", e)
+            return
+        }
+
+        pendingColorJob?.cancel()
+        colorAnimator?.cancel()
+        currentOverlayColor = color
+        colorOverlayView.setBackgroundColor(color)
+        colorOverlayView.alpha = colorOverlayAlpha
+    }
+
+    private fun handleColorStateCleared() {
+        clearColorOverlay()
+    }
+
+    // COLOR_CHANGE 오버레이를 완전히 끈다 - 패턴 모드 진입, STOP, retain 상태 삭제 시 공통으로 쓰인다.
+    private fun clearColorOverlay() {
+        pendingColorJob?.cancel()
+        colorAnimator?.cancel()
+        colorOverlayView.alpha = 0f
     }
 
     // startAt이 미래 시각이면 그 시각까지 대기하고, 그렇지 않더라도 최소 START_DELAY_MS만큼은
