@@ -1,7 +1,7 @@
 # MediaSphere — CLAUDE.md
 
 ## 프로젝트 정의
-500대 Galaxy A15를 지름 2m 구체에 배치하고
+499대 Galaxy A15를 지름 2m 구체에 배치하고
 마스터 서버(Node.js)가 UDP 멀티캐스트로 타임코드를
 브로드캐스트하여 360도 영상을 정밀 동기화 재생하는
 미디어 설치 시스템.
@@ -41,6 +41,9 @@ MediaSphere/
 │   └── public/    ← 대시보드 UI
 ├── android/       ← Android 앱 (Kotlin)
 ├── pipeline/      ← Python 영상 처리
+│   └── slicer/    ← 원본 영상 → 폰별 타일 분할 (gen_tiles.py + slice_video.py)
+│                     오프라인 도구, 서버 런타임과 별도 실행. 외부 패키지 없음
+│                     (단, preview_rig.py만 Pillow 필요)
 └── docs/          ← 문서
 
 ## 앱 동작 모드
@@ -120,7 +123,7 @@ MediaSphere/
         [x] 패턴 모드 (점멸)
         [x] 16대 스케일업 테스트
 - [ ] Phase 3: FFmpeg 파이프라인 + 역변환 보정
-        [ ] 15대 분할 재생 테스트
+        [x] 15대 분할 재생 테스트
               3행 5열 평면 배치 (일정 간격)
               원본 영상을 FFmpeg로 15개 영역으로 crop
               각 폰이 자기 영역 영상만 재생
@@ -132,8 +135,13 @@ MediaSphere/
               → 서버 → MQTT COLOR_CHANGE → 폰 컬러 오버레이 확인
               baikal.ai API 스펙 확정 전 모킹으로 진행
         [ ] COLOR_CHANGE Android 구현 (baikal.ai 스펙 확정 후)
-        [ ] FFmpeg 파이프라인 구축
-        [ ] 역변환 보정
+        [x] FFmpeg 파이프라인 구축 (pipeline/slicer/ - gen_tiles.py/slice_video.py)
+              평면 15분할 + 구체 499분할 동일 tiles.json 스키마로 처리
+              [ ] manifest.json → 폰별 config.json 자동 생성/배포 (미구현)
+              [ ] 폰 파일 수신 검증 (체크섬/heartbeat) (미구현)
+              [ ] 대시보드 연동 (업로드 → 분할 실행 → 진행률) (미구현)
+        [ ] 역변환 보정 (rectilinear, 우선순위 낮음 - 육안 차이 확인 후 판단)
+        [ ] 아틀라스 팩킹 (우선순위 낮음 - 8K로 화질 부족 판단 시 검토)
 - [ ] Phase 4: 모니터링 대시보드 + 500대
 
 ## 클라이언트 요구사항
