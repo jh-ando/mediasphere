@@ -181,6 +181,16 @@ function publishControl(payload, { retain = true } = {}) {
   });
 }
 
+// 현재 컬러 상태를 지운다 - state 초기화 + COLOR_CLEAR 발행(non-retain) + wall/state/color
+// retain 삭제를 한 곳에서 처리한다. /api/color-reset(대시보드)과 /api/color-clear(키오스크)가 공유한다.
+function clearCurrentColor(leadTime) {
+  state.currentColor = { color: null, stress: null };
+  const startAt = Date.now() + leadTime;
+  publishControl({ type: 'COLOR_CLEAR', startAt }, { retain: false });
+  publishColorState();
+  return startAt;
+}
+
 // wall/state/color에 "현재 컬러 상태"를 retain으로 발행한다 (startAt 없음).
 // 늦게 접속하거나 재부팅한 폰은 이미 지나간 startAt이 있는 COLOR_CHANGE(non-retain)를 받을 수
 // 없으므로, 대신 이 retained 상태를 받아 애니메이션 없이 즉시 현재 색으로 맞춘다.
@@ -372,13 +382,27 @@ app.post('/api/color-change', (req, res) => {
 // 컬러 오버레이 초기화 - 대시보드의 "색 초기화" 버튼용. 오버레이 제거 명령을 발행하고
 // retain된 wall/state/color도 지운다.
 app.post('/api/color-reset', (req, res) => {
-  state.currentColor = { color: null, stress: null };
-
-  publishControl({ type: 'COLOR_CLEAR', startAt: Date.now() + 500 }, { retain: false });
-  publishColorState();
+  clearCurrentColor(500);
 
   console.log('[HTTP] 컬러 오버레이 초기화');
   res.json({ ok: true });
+});
+
+// 컬러 오버레이 초기화 - 키오스크의 COLOR_CLEAR 리셋 버튼용. leadTime 검증 방식은
+// /api/color-change와 동일하게 맞춘다 (기본값 DEFAULT_COLOR_LEAD_TIME_MS).
+app.post('/api/color-clear', (req, res) => {
+  const { leadTime } = req.body;
+
+  const finalLeadTime = leadTime !== undefined ? Number(leadTime) : DEFAULT_COLOR_LEAD_TIME_MS;
+  if (!Number.isFinite(finalLeadTime) || finalLeadTime < 0) {
+    res.status(400).json({ ok: false, error: 'leadTime은 0 이상 숫자여야 합니다.' });
+    return;
+  }
+
+  const startAt = clearCurrentColor(finalLeadTime);
+
+  console.log(`[HTTP] 컬러 리셋(키오스크) - startAt=${startAt}`);
+  res.json({ ok: true, startAt });
 });
 
 // 현재 상태 조회

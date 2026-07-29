@@ -7,6 +7,7 @@ const stressValueEl = document.getElementById('stress-value');
 const colorPickerEl = document.getElementById('color-picker');
 const colorPreviewEl = document.getElementById('color-preview');
 const btnSend = document.getElementById('btn-send');
+const btnClear = document.getElementById('btn-clear');
 const countdownEl = document.getElementById('countdown');
 const historyBodyEl = document.getElementById('history-body');
 
@@ -121,6 +122,32 @@ btnSend.addEventListener('click', async () => {
     countdownEl.textContent = '전송 실패: 네트워크 오류';
   } finally {
     btnSend.disabled = false;
+  }
+});
+
+btnClear.addEventListener('click', async () => {
+  btnClear.disabled = true;
+  try {
+    const res = await fetch('/api/color-clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+
+    addHistory({ time: Date.now(), stress: null, color: null, ok: !!data.ok });
+
+    if (data.ok) {
+      startCountdown(data.startAt);
+    } else {
+      countdownEl.textContent = `리셋 실패: ${data.error || '알 수 없는 오류'}`;
+    }
+  } catch (err) {
+    console.error('[HTTP] 컬러 리셋 실패', err);
+    addHistory({ time: Date.now(), stress: null, color: null, ok: false });
+    countdownEl.textContent = '리셋 실패: 네트워크 오류';
+  } finally {
+    btnClear.disabled = false;
   }
 });
 
