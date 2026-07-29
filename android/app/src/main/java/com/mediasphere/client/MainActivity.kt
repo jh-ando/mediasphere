@@ -1,6 +1,7 @@
 package com.mediasphere.client
 
-import android.animation.ArgbEvaluator
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
@@ -46,6 +47,8 @@ private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 
 private const val TIME_SYNC_INTERVAL_MS = 60_000L // TimeSyncManager 재동기화 주기 (1분)
 private const val CONFIG_PATH = "/sdcard/mediasphere/config.json"
 private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
+private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
+private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 횟수"라 9를 주면 총 10회 재생된다
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN }
@@ -425,7 +428,8 @@ class MainActivity : ComponentActivity() {
         Log.d(PATTERN_TAG, "순차 점멸 정지: 마지막 색상 유지")
     }
 
-    // 키오스크 COLOR_CHANGE - startAt까지 대기한 뒤 ValueAnimator로 현재 색상에서 새 색상으로 전환한다.
+    // 키오스크 COLOR_CHANGE - startAt까지 대기한 뒤 해당 색으로 1초 주기 알파 페이드 인/아웃을
+    // 10회 반복하고, 끝나면 오버레이를 완전히 끈다.
     private fun handleColorChange(message: MqttControlMessage.ColorChange) {
         val newColor = try {
             Color.parseColor(message.color)
@@ -438,21 +442,35 @@ class MainActivity : ComponentActivity() {
         pendingColorJob = lifecycleScope.launch {
             val delayMs = message.startAt - TimeSyncManager.now()
             if (delayMs > 0) delay(delayMs)
-            animateColorOverlay(newColor, message.duration)
+            animateColorOverlay(newColor)
         }
     }
 
-    private fun animateColorOverlay(toColor: Int, duration: Long) {
+    private fun animateColorOverlay(color: Int) {
         colorAnimator?.cancel()
-        val animator = ValueAnimator.ofObject(ArgbEvaluator(), currentOverlayColor, toColor)
-        animator.duration = duration
+
+        currentOverlayColor = color
+        colorOverlayView.setBackgroundColor(color)
+        colorOverlayView.visibility = View.VISIBLE
+
+        // 한 사이클(0 -> colorOverlayAlpha -> 0)이 1초, repeatCount=9로 총 10회 반복한다.
+        val animator = ValueAnimator.ofFloat(0f, colorOverlayAlpha, 0f)
+        animator.duration = COLOR_BLINK_CYCLE_MS
+        animator.repeatCount = COLOR_BLINK_REPEAT_COUNT
+        animator.repeatMode = ValueAnimator.RESTART
         animator.addUpdateListener { anim ->
-            val color = anim.animatedValue as Int
-            colorOverlayView.setBackgroundColor(color)
-            currentOverlayColor = color
+            colorOverlayView.alpha = anim.animatedValue as Float
         }
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                // cancel()도 onAnimationEnd를 호출하므로, 이 애니메이터가 여전히 최신인 경우에만
+                // 정리한다 (새 COLOR_CHANGE로 교체된 뒤 이 콜백이 뒤늦게 와서 새 상태를 덮어쓰는 것 방지).
+                if (colorAnimator !== animation) return
+                colorOverlayView.alpha = 0f
+                colorOverlayView.visibility = View.GONE
+            }
+        })
         colorAnimator = animator
-        colorOverlayView.alpha = colorOverlayAlpha
         animator.start()
     }
 
@@ -466,8 +484,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // wall/state/color(retain) - 재접속/재부팅 시 애니메이션 없이 즉시 현재 색상을 반영한다.
+    // wall/state/color(retain) - 재접속/재부팅으로 라이브 COLOR_CHANGE를 놓쳤을 때만 애니메이션 없이
+    // 즉시 현재 색상을 반영한다. retain 플래그는 "나중에 구독하는 클라이언트"에만 의미가 있을 뿐,
+    // 이미 연결돼 wall/control을 구독 중인 폰에도 이 메시지가 그대로 실시간으로 온다. COLOR_CHANGE를
+    // 이미 정상 수신해 대기 중이거나 점멸 중이면 이 메시지는 그 명령의 부수 효과일 뿐이므로 무시해야
+    // 점멸이 중간에 잘리고 색이 즉시 박히는 문제(pendingColorJob이 취소되는 문제)가 생기지 않는다.
     private fun handleColorState(message: MqttControlMessage.ColorState) {
+        if (pendingColorJob?.isActive == true || colorAnimator?.isRunning == true) {
+            Log.d(TAG, "라이브 COLOR_CHANGE 처리 중이라 wall/state/color 갱신 무시")
+            return
+        }
+
         val color = try {
             Color.parseColor(message.color)
         } catch (e: IllegalArgumentException) {
@@ -475,22 +502,22 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        pendingColorJob?.cancel()
-        colorAnimator?.cancel()
         currentOverlayColor = color
         colorOverlayView.setBackgroundColor(color)
         colorOverlayView.alpha = colorOverlayAlpha
+        colorOverlayView.visibility = View.VISIBLE
     }
 
     private fun handleColorStateCleared() {
         clearColorOverlay()
     }
 
-    // COLOR_CHANGE 오버레이를 완전히 끈다 - 패턴 모드 진입, STOP, retain 상태 삭제 시 공통으로 쓰인다.
+    // COLOR_CHANGE 오버레이를 완전히 끈다 - 패턴 모드 진입, STOP, COLOR_CLEAR, retain 상태 삭제 시 공통으로 쓰인다.
     private fun clearColorOverlay() {
         pendingColorJob?.cancel()
         colorAnimator?.cancel()
         colorOverlayView.alpha = 0f
+        colorOverlayView.visibility = View.GONE
     }
 
     // startAt이 미래 시각이면 그 시각까지 대기하고, 그렇지 않더라도 최소 START_DELAY_MS만큼은
