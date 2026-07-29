@@ -129,12 +129,12 @@ MediaSphere/
               각 폰이 자기 영역 영상만 재생
               전체가 하나의 큰 화면처럼 보이는 것 확인
               기존 UDP 타임코드 동기화 그대로 사용
-        [ ] 키오스크 연동 테스트
+        [x] 키오스크 연동 테스트
               server/public/kiosk-test.html 제작
               color picker로 HTTP POST /api/color-change 전송
               → 서버 → MQTT COLOR_CHANGE → 폰 컬러 오버레이 확인
               baikal.ai API 스펙 확정 전 모킹으로 진행
-        [ ] COLOR_CHANGE Android 구현 (baikal.ai 스펙 확정 후)
+        [x] COLOR_CHANGE Android 구현 (baikal.ai 스펙 확정 후)
         [x] FFmpeg 파이프라인 구축 (pipeline/slicer/ - gen_tiles.py/slice_video.py)
               평면 15분할 + 구체 499분할 동일 tiles.json 스키마로 처리
               [ ] manifest.json → 폰별 config.json 자동 생성/배포 (미구현)
