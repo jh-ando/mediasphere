@@ -1,13 +1,15 @@
 # MediaSphere — CLAUDE.md
 
 ## 프로젝트 정의
-499대 Galaxy A15를 지름 2m 구체에 배치하고
+439대 Galaxy A15를 지름 2m 구체에 배치하고
 마스터 서버(Node.js)가 UDP 멀티캐스트로 타임코드를
 브로드캐스트하여 360도 영상을 정밀 동기화 재생하는
 미디어 설치 시스템.
 
 ## 현재 개발 단계
-Phase 3: FFmpeg 파이프라인 + 역변환 보정
+Phase 3 진행 중:
+- 15대 분할 재생 + 키오스크 연동 클라이언트 시연 완료
+- 다음: 100대 확장 + 텍스트 스크롤 + 텍스트 패턴 구현
 
 ## 아키텍처
 - 타임코드: UDP 멀티캐스트 239.0.0.1:5000 (30fps)
@@ -26,6 +28,19 @@ Phase 3: FFmpeg 파이프라인 + 역변환 보정
 - 파이프라인: Python 3.11, FFmpeg
 - 브로커: Mosquitto
 
+## 폰 배치 (확정)
+- 총 439대, 전부 포트레이트
+- 위도는 폰 중심 기준
+- 위도 간격: 90/7 ≈ 12.857°
+- 0° → 50대
+- ±12.86° → 각 50대 (100대)
+- ±25.71° → 각 50대 (100대)
+- ±38.57° → 각 40대 (80대)
+- ±51.43° → 각 30대 (60대)
+- ±64.29° → 각 20대 (40대)
+- −77.14° → 9대 (+77.14°는 배치 없음)
+- gen_tiles.py SPHERE_ROWS 업데이트 필요 (100대 테스트 때)
+
 ## 폰 스펙 (검증 완료)
 - 기종: Galaxy A15
 - 재생 해상도: 480×854 (480p)
@@ -38,7 +53,7 @@ MediaSphere/
 ├── CLAUDE.md
 ├── server/        ← Node.js 마스터 서버
 │   ├── src/
-│   └── public/    ← 대시보드 UI
+│   └── public/    ← 대시보드 UI, kiosk-test.html
 ├── android/       ← Android 앱 (Kotlin)
 ├── pipeline/      ← Python 영상 처리
 │   └── slicer/    ← 원본 영상 → 폰별 타일 분할 (gen_tiles.py + slice_video.py)
@@ -47,8 +62,7 @@ MediaSphere/
 └── docs/          ← 문서
 
 ## 앱 동작 모드
-두 가지 모드가 상호 배타적으로 동작.
-모드 전환 시 이전 모드는 완전히 비활성화.
+세 가지 모드. 모드 전환 시 이전 모드는 완전히 비활성화.
 
 ### 영상 모드 (기본)
 - ExoPlayer로 영상 재생
@@ -60,6 +74,14 @@ MediaSphere/
 - PatternView (전체화면 단색 View) 표시
 - ValueAnimator로 점멸 / 컬러 변화 제어
 - UDP 타임코드 수신 중단
+- 텍스트 패턴 포함 (아래 참조)
+
+### 컬러 오버레이 모드 (영상 모드 위에 레이어)
+- 영상 재생 유지
+- colorOverlayView를 영상 위에 반투명 표시
+- ValueAnimator로 1초 주기 10회 페이드 인/아웃 후 자동 소멸
+- colorOverlayAlpha: config.json 설정 (기본 0.35)
+- PATTERN_START 진입, STOP, onDestroy 시 자동 해제
 
 ## MQTT 토픽 구조
 - wall/control     : 서버 → 전체
@@ -67,6 +89,7 @@ MediaSphere/
 - wall/status/{id} : 폰 → 서버 (heartbeat, 5초마다)
 - wall/ready/{id}  : 폰 → 서버 (다운로드 완료)
 - wall/error/{id}  : 폰 → 서버 (오류)
+- wall/state/color : 서버 → 전체 (retain, 현재 컬러 상태)
 
 ## MQTT 명령 타입 (wall/control)
 
@@ -90,18 +113,41 @@ MediaSphere/
 - PATTERN_STOP : {"type":"PATTERN_STOP"}
                  점멸 정지, 마지막 색상 유지
 - COLOR_CHANGE : {"type":"COLOR_CHANGE","color":"#RRGGBB",
+                  "startAt":밀리초,"duration":밀리초,
+                  "stress":0.0~1.0,"source":"kiosk"}
+                 1초 주기 10회 점멸 후 자동 소멸
+- COLOR_CLEAR  : {"type":"COLOR_CLEAR","startAt":밀리초}
+                 컬러 오버레이 즉시 제거
+
+### 텍스트 스크롤 (신규 - 미구현)
+- TEXT_SCROLL  : {"type":"TEXT_SCROLL","text":"Hello",
+                  "color":"#FFFFFF","bgColor":"#000000",
+                  "speed":1.0,"direction":"horizontal",
                   "startAt":밀리초}
-                 (미구현 - baikal.ai 스펙 확정 후 진행)
+                 서버가 각 폰의 구체 위치(위도/경도)를 기반으로
+                 폰별로 다른 startDelay를 계산해 개별 발행.
+                 텍스트가 구체 표면을 따라 흐르는 효과.
+- TEXT_STOP    : {"type":"TEXT_STOP"}
+
+### 텍스트 패턴 (신규 - 미구현)
+- TEXT_PATTERN : {"type":"TEXT_PATTERN","text":"Hi",
+                  "color":"#FFFFFF","bgColor":"#000000",
+                  "startAt":밀리초}
+                 폰들을 픽셀 삼아 텍스트를 구체 표면에 표시.
+                 서버가 각 폰이 텍스트의 어느 픽셀에 해당하는지
+                 계산하여 색(전경/배경)을 개별 발행.
 
 ## HTTP API 엔드포인트
 - POST /api/play
 - POST /api/stop
 - POST /api/mode           {"mode":"video"|"pattern"}
 - POST /api/pattern/config {"color":"#FFFFFF","interval":500,"duration":3000}
-                            (발행 없이 서버에 설정만 저장)
-- POST /api/pattern/start  (저장된 patternConfig로 PATTERN_START 발행)
+- POST /api/pattern/start
 - POST /api/pattern/stop
-- POST /api/color-change   {"color":"#RRGGBB"} (미구현)
+- POST /api/color-change   {"stress":0.0~1.0,"color":"#RRGGBB","leadTime":2000}
+- POST /api/color-clear
+- POST /api/text-scroll    {"text":"Hello","color":"#FFFFFF","speed":1.0} (미구현)
+- POST /api/text-pattern   {"text":"Hi","color":"#FFFFFF"} (미구현)
 
 ## config.json 위치 (폰 내부)
 /sdcard/mediasphere/config.json
@@ -122,46 +168,68 @@ MediaSphere/
         [x] Android heartbeat 발행
         [x] 패턴 모드 (점멸)
         [x] 16대 스케일업 테스트
-- [ ] Phase 3: FFmpeg 파이프라인 + 역변환 보정
-        [x] 15대 분할 재생 테스트
-              3행 5열 평면 배치 (일정 간격)
-              원본 영상을 FFmpeg로 15개 영역으로 crop
-              각 폰이 자기 영역 영상만 재생
-              전체가 하나의 큰 화면처럼 보이는 것 확인
-              기존 UDP 타임코드 동기화 그대로 사용
+- [ ] Phase 3: FFmpeg 파이프라인 + 신규 기능
+        [x] 15대 분할 재생 테스트 (클라이언트 시연 완료)
         [x] 키오스크 연동 테스트
-              server/public/kiosk-test.html 제작
-              color picker로 HTTP POST /api/color-change 전송
-              → 서버 → MQTT COLOR_CHANGE → 폰 컬러 오버레이 확인
-              baikal.ai API 스펙 확정 전 모킹으로 진행
-        [x] COLOR_CHANGE Android 구현 (baikal.ai 스펙 확정 후)
-        [x] FFmpeg 파이프라인 구축 (pipeline/slicer/ - gen_tiles.py/slice_video.py)
-              평면 15분할 + 구체 499분할 동일 tiles.json 스키마로 처리
+              kiosk-test.html, color picker → /api/color-change
+              → MQTT COLOR_CHANGE → 폰 컬러 오버레이 확인
+              ※ 키오스크 인터랙션 방식 미확정 — 확정 후 교체 예정
+        [x] COLOR_CHANGE Android 구현
+              1초 주기 10회 점멸 후 자동 소멸
+              wall/state/color retain으로 재부팅 폰 상태 복구
+        [x] FFmpeg 파이프라인 구축 (pipeline/slicer/)
+              평면 15분할 + 구체 439분할 동일 tiles.json 스키마
               [ ] manifest.json → 폰별 config.json 자동 생성/배포 (미구현)
               [ ] 폰 파일 수신 검증 (체크섬/heartbeat) (미구현)
-              [ ] 대시보드 연동 (업로드 → 분할 실행 → 진행률) (미구현)
-        [ ] 역변환 보정 (rectilinear, 우선순위 낮음 - 육안 차이 확인 후 판단)
-        [ ] 아틀라스 팩킹 (우선순위 낮음 - 8K로 화질 부족 판단 시 검토)
-- [ ] Phase 4: 모니터링 대시보드 + 500대
+              [ ] 대시보드 연동 (업로드 → 분할 → 진행률) (미구현)
+        [ ] 100대 확장 테스트 (다음 목표)
+              15대 → 100대 스케일업
+              네트워크/동기화 안정성 재검증
+        [ ] 텍스트 스크롤 (신규)
+              서버 대시보드에서 텍스트 입력 → 구체 표면을 텍스트가 흐름
+              각 폰의 위도/경도 기반으로 서버가 startDelay 계산
+              wall/device/{id}로 개별 발행
+        [ ] 텍스트 패턴 (신규)
+              "Hi" 같은 짧은 텍스트를 폰 전체를 픽셀로 사용해 표시
+              패턴 모드 내 기능으로 구현
+        [ ] 역변환 보정 (우선순위 낮음 - 육안 차이 확인 후 판단)
+- [ ] Phase 4: 모니터링 대시보드 + 439대
 
 ## 클라이언트 요구사항
 - 점멸 패턴: 패턴 모드에서 화면 점멸 ✅
-- 스트레스 컬러 오버레이:
-    마이크 → baikal.ai API → 스트레스 지수 0.0~1.0
-    → COLOR_CHANGE 명령 → ValueAnimator 색상 변화
-    → startAt 절대시각으로 500대 동시 전환
-    키오스크 → HTTP POST /api/color-change 방식 확정
+- 스트레스 컬러 오버레이: ✅ (키오스크 모킹으로 검증 완료)
+    → 실제 인터랙션 방식 미확정 (키오스크 외 다른 방식 검토 중)
+- 텍스트 스크롤: 구체 표면을 따라 텍스트가 흐르는 애니메이션
+- 텍스트 패턴: 폰들을 픽셀 삼아 "Hi" 등 간단한 텍스트 표시
+- 100대 규모 시연
+
+## 신규 기능 설계 노트
+
+### 텍스트 스크롤 구현 방향
+- 서버가 각 폰의 구체 위 위치(위도/경도)를 알고 있음
+- 텍스트가 경도 방향으로 흐를 경우:
+  서버가 경도 순서로 각 폰에 delay를 계산해 개별 MQTT 발행
+- Android: 지정된 startAt에 텍스트 오버레이 표시 후 슬라이드 아웃
+
+### 텍스트 패턴 구현 방향
+- 구체 표면의 폰 배치를 픽셀 그리드로 취급
+- 서버가 텍스트 비트맵을 렌더링하고 각 폰 위치와 매핑
+- 전경색 폰 → COLOR_CHANGE, 배경색 폰 → 다른 COLOR_CHANGE 개별 발행
+- 폰 해상도(1대)가 아닌 폰 배치 자체를 픽셀로 사용
 
 ## 주의사항
 - WifiManager.MulticastLock 없으면 UDP 수신 안 됨
 - ExoPlayer seekTo()는 메인 스레드에서만 호출
 - MQTT 콜백에서 UI 수정 시 runOnUiThread 필수
-- 폰 1대/16대/500대 모두 같은 APK, config.json만 다름
+- 폰 1대/16대/439대 모두 같은 APK, config.json만 다름
 - 모드 전환 시 이전 모드 리소스 반드시 정리
   (ExoPlayer pause + PatternView ValueAnimator cancel)
 - 일부 Android 14 기기(3버튼 내비게이션)에서
-  전체화면 적용 시 systemUiVisibility 레거시 플래그
-  병행 적용 필요
+  전체화면 적용 시 systemUiVisibility 레거시 플래그 병행 적용 필요
+- 서버 파워모드는 퍼포먼스 모드 고정 필요
+  (밸런스 모드 전환 시 타임코드 지연 → 동기화 이탈 발생 확인됨)
+- 화면 잠금/절전 비활성화 필수
+  (잠금화면 전환 시 일부 폰 동기화 이탈 가능성 있음)
 
 ## Git 규칙
 각 기능 완성 후 내가 "커밋해줘"라고 하면
