@@ -22,6 +22,9 @@ const MQTT_BROKER_URL = 'mqtt://localhost:1883';
 const MQTT_CONTROL_TOPIC = 'wall/control';
 const MQTT_COLOR_STATE_TOPIC = 'wall/state/color';
 const MQTT_STATUS_TOPIC_FILTER = 'wall/status/+';
+const MQTT_READY_TOPIC_FILTER = 'wall/ready/+';
+const MQTT_ERROR_TOPIC_FILTER = 'wall/error/+';
+const MQTT_DEVICE_TOPIC_PREFIX = 'wall/device/';
 const TOTAL_DEVICES = 499; // 구체 배치 위도별 합산(25+40+50*7+40+25+15+4) 기준. 이전엔 500으로 잘못돼 있었음
 const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline 처리
 const STATUS_BROADCAST_MS = 1000;
@@ -29,6 +32,16 @@ const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.j
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
+
+// ── 파일 배포(manifest/config/영상) 경로 ──────────────────
+// pipeline/slicer의 gen_manifest.py, gen_configs.py가 이 구조로 결과물을 채워 넣는 것을 전제로 한다:
+//   server/distribute/videos/*.mp4   (slice_video.py -o를 여기로 지정)
+//   server/distribute/manifest.json  (gen_manifest.py -o)
+//   server/distribute/configs/*.json (gen_configs.py -o)
+const DISTRIBUTE_DIR = path.join(__dirname, '..', 'distribute');
+const MANIFEST_PATH = path.join(DISTRIBUTE_DIR, 'manifest.json');
+const CONFIGS_DIR = path.join(DISTRIBUTE_DIR, 'configs');
+const VIDEOS_DIR = path.join(DISTRIBUTE_DIR, 'videos');
 
 // ── 재생 상태 ────────────────────────────────────────
 // isPlaying: 재생 중 여부
@@ -90,6 +103,114 @@ function isDeviceOnline(deviceId) {
   return lastSeen !== undefined && Date.now() - lastSeen < OFFLINE_TIMEOUT_MS;
 }
 
+// ── 배포 매니페스트 (파일 수신 검증의 기준값) ────────────
+// gen_manifest.py가 만든 manifest.json - deviceId별 기대 체크섬/SSID/영상 파일명을 담고 있다.
+let manifest = null;
+// deviceId(숫자/문자 모두 커버되도록 매니페스트의 deviceId 그대로) -> manifest의 device 항목
+let manifestByDeviceId = {};
+
+// deviceId -> 폰이 wall/ready 또는 wall/error로 보고한 최신 파일 상태
+// { status: 'ok' | 'mismatch', checksum, reason?, reportedAt }
+const deviceFileState = {};
+
+function loadManifest() {
+  if (!fs.existsSync(MANIFEST_PATH)) {
+    console.log(`[HTTP] ${MANIFEST_PATH} 없음 - 파일 배포/검증 기능은 manifest 배치 전까지 비활성 상태`);
+    manifest = null;
+    manifestByDeviceId = {};
+    return;
+  }
+
+  try {
+    manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH));
+    manifestByDeviceId = {};
+    for (const device of manifest.devices) {
+      manifestByDeviceId[device.deviceId] = device;
+    }
+    console.log(`[HTTP] manifest.json 로드 완료 - 디바이스 ${manifest.devices.length}대`);
+  } catch (err) {
+    console.error('[HTTP] manifest.json 파싱 실패:', err.message);
+  }
+}
+
+loadManifest();
+
+// 폰이 wall/ready/{deviceId}로 보고한 체크섬을 manifest의 기대값과 비교해 상태를 기록한다.
+function handleFileReady(deviceId, payload) {
+  let msg;
+  try {
+    msg = JSON.parse(payload.toString());
+  } catch (err) {
+    console.error(`[MQTT] wall/ready/${deviceId} 파싱 실패:`, err.message);
+    return;
+  }
+
+  const expected = manifestByDeviceId[deviceId];
+  const ok = Boolean(expected && expected.checksum && msg.checksum === expected.checksum);
+
+  deviceFileState[deviceId] = {
+    status: ok ? 'ok' : 'mismatch',
+    checksum: msg.checksum,
+    reportedAt: Date.now(),
+  };
+  console.log(`[MQTT] wall/ready/${deviceId} 수신 - ${ok ? 'ok' : 'mismatch'} (checksum=${msg.checksum})`);
+}
+
+// 폰이 wall/error/{deviceId}로 보고한 다운로드/검증 실패를 기록한다 (원인 파싱 실패해도 mismatch로 취급).
+function handleFileError(deviceId, payload) {
+  let msg = {};
+  try {
+    msg = JSON.parse(payload.toString());
+  } catch (err) {
+    msg = { reason: 'PARSE_FAILED', detail: payload.toString() };
+  }
+
+  deviceFileState[deviceId] = {
+    status: 'mismatch',
+    checksum: null,
+    reason: msg.reason,
+    reportedAt: Date.now(),
+  };
+  console.log(`[MQTT] wall/error/${deviceId} 수신 - ${msg.reason || '(사유 없음)'} ${msg.detail || ''}`);
+}
+
+// 대시보드에 노출할 3단계 상태. 응답 없음(무응답/heartbeat 끊김)이 체크섬 불일치보다 먼저 판정된다 -
+// 오프라인 상태에서 온 오래된 ready/error 보고를 "정상"으로 오인하지 않기 위함.
+function computeFileStatus(deviceId) {
+  if (!manifest) return 'unknown';
+  if (!isDeviceOnline(deviceId)) return 'unknown';
+
+  const reported = deviceFileState[deviceId];
+  if (!reported) return 'unknown'; // 온라인이지만 아직 ready/error 보고가 한 번도 없음
+  return reported.status;
+}
+
+// manifest의 폰별 config.json을 wall/device/{deviceId}에 retain 발행한다.
+// wall/state/color와 같은 패턴 - 늦게 접속/재부팅한 폰도 자동으로 최신 config를 받는다.
+function publishDeviceConfigs() {
+  if (!manifest) {
+    console.error('[MQTT] manifest 없음 - wall/device 발행 생략');
+    return 0;
+  }
+
+  let count = 0;
+  for (const device of manifest.devices) {
+    const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
+    if (!fs.existsSync(configPath)) {
+      console.error(`[MQTT] config 파일 없음, 발행 생략 - deviceId=${device.deviceId}`);
+      continue;
+    }
+
+    const payload = fs.readFileSync(configPath, 'utf-8');
+    const topic = `${MQTT_DEVICE_TOPIC_PREFIX}${device.deviceId}`;
+    mqttClient.publish(topic, payload, { retain: true, qos: 1 }, (err) => {
+      if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
+    });
+    count += 1;
+  }
+  return count;
+}
+
 // ── UDP 멀티캐스트 소켓 초기화 ───────────────────────
 const udpSocket = dgram.createSocket('udp4');
 
@@ -147,6 +268,16 @@ mqttClient.on('connect', () => {
     if (err) console.error('[MQTT] wall/status 구독 오류:', err.message);
     else console.log(`[MQTT] ${MQTT_STATUS_TOPIC_FILTER} 구독 완료`);
   });
+
+  mqttClient.subscribe(MQTT_READY_TOPIC_FILTER, (err) => {
+    if (err) console.error('[MQTT] wall/ready 구독 오류:', err.message);
+    else console.log(`[MQTT] ${MQTT_READY_TOPIC_FILTER} 구독 완료`);
+  });
+
+  mqttClient.subscribe(MQTT_ERROR_TOPIC_FILTER, (err) => {
+    if (err) console.error('[MQTT] wall/error 구독 오류:', err.message);
+    else console.log(`[MQTT] ${MQTT_ERROR_TOPIC_FILTER} 구독 완료`);
+  });
 });
 
 mqttClient.on('reconnect', () => {
@@ -160,11 +291,22 @@ mqttClient.on('error', (err) => {
 // wall/status/{id} heartbeat 수신 - 페이로드 내용과 무관하게 메시지가 온 것 자체를
 // 해당 deviceId의 heartbeat로 취급한다.
 mqttClient.on('message', (topic, payload) => {
-  const match = topic.match(/^wall\/status\/(\d+)$/);
-  if (!match) return;
+  const statusMatch = topic.match(/^wall\/status\/(\d+)$/);
+  if (statusMatch) {
+    deviceLastSeen[statusMatch[1]] = Date.now();
+    return;
+  }
 
-  const deviceId = match[1];
-  deviceLastSeen[deviceId] = Date.now();
+  const readyMatch = topic.match(/^wall\/ready\/(\d+)$/);
+  if (readyMatch) {
+    handleFileReady(readyMatch[1], payload);
+    return;
+  }
+
+  const errorMatch = topic.match(/^wall\/error\/(\d+)$/);
+  if (errorMatch) {
+    handleFileError(errorMatch[1], payload);
+  }
 });
 
 // wall/control에 제어 명령을 발행한다. 기본은 retain: true로 발행해서
@@ -212,6 +354,8 @@ function publishColorState() {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
+// 폰이 다운로드하는 영상 파일 - gen_manifest.py/gen_configs.py가 채워 넣는 distribute/videos/
+app.use('/clips', express.static(VIDEOS_DIR));
 
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
 app.post('/api/play', (req, res) => {
@@ -405,6 +549,38 @@ app.post('/api/color-clear', (req, res) => {
   res.json({ ok: true, startAt });
 });
 
+// 폰별 config.json 조회 (디버깅/수동 확인용 - 폰은 wall/device/{deviceId}로 받는다)
+app.get('/api/config/:deviceId', (req, res) => {
+  const device = manifestByDeviceId[req.params.deviceId];
+  if (!device) {
+    res.status(404).json({ ok: false, error: `manifest에 deviceId=${req.params.deviceId} 없음` });
+    return;
+  }
+
+  const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
+  if (!fs.existsSync(configPath)) {
+    res.status(404).json({ ok: false, error: `config 파일 없음: ${configPath}` });
+    return;
+  }
+  res.sendFile(configPath);
+});
+
+// distribute/manifest.json을 다시 읽고, 폰별 config를 wall/device/{deviceId}(retain)로 재발행한 뒤
+// CHECK_UPDATE를 브로드캐스트해 모든 폰이 자기 config/영상 상태를 다시 검사하도록 한다.
+app.post('/api/distribute/publish', (req, res) => {
+  loadManifest();
+  if (!manifest) {
+    res.status(400).json({ ok: false, error: `manifest.json이 없습니다: ${MANIFEST_PATH}` });
+    return;
+  }
+
+  const published = publishDeviceConfigs();
+  publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
+
+  console.log(`[HTTP] 배포 재발행 - wall/device ${published}건 + CHECK_UPDATE 브로드캐스트`);
+  res.json({ ok: true, published, totalDevices: manifest.devices.length });
+});
+
 // 현재 상태 조회
 app.get('/api/state', (req, res) => {
   const elapsedMs = state.isPlaying ? Math.max(0, Date.now() - state.startAt) : state.stoppedElapsedMs;
@@ -437,12 +613,14 @@ wss.on('connection', (ws) => {
 
 function buildStatusPayload() {
   const devices = {};
+  const fileStatus = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
     const status = isDeviceOnline(id) ? 'online' : 'offline';
     devices[id] = status;
     if (status === 'online') online += 1;
+    fileStatus[id] = computeFileStatus(id);
   }
 
   const payload = {
@@ -450,6 +628,7 @@ function buildStatusPayload() {
     online,
     total: TOTAL_DEVICES,
     devices,
+    fileStatus,
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     patternConfig: state.patternConfig,

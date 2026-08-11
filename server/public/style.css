@@ -48,6 +48,11 @@ body {
   color: #8b93a1;
 }
 
+.file-status-count {
+  color: #8b93a1;
+  font-variant-numeric: tabular-nums;
+}
+
 .color-status {
   display: flex;
   align-items: center;
@@ -224,6 +229,11 @@ main {
 
 .device-cell.offline {
   background: #3a3f4a;
+}
+
+/* 체크섬 불일치/다운로드 실패 - online 배경 위에 경고 테두리를 얹는다 (배경색 자체는 그대로 둠) */
+.device-cell.mismatch {
+  box-shadow: inset 0 0 0 2px #f0b429;
 }
 
 .offline-section {

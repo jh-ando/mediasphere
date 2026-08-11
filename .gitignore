@@ -6,3 +6,4 @@ uploads/
 server/data/
 __pycache__/
 *.pyc
+server/distribute/

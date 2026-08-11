@@ -1,0 +1,8 @@
+{
+  "serverIp": "192.168.8.10",
+  "multicastGroup": "239.0.0.1",
+  "timecodePort": 5000,
+  "mqttBroker": "tcp://192.168.8.10:1883",
+  "videoPath": "/sdcard/mediasphere/videos/",
+  "colorOverlayAlpha": 0.35
+}

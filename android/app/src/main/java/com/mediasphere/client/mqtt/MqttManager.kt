@@ -30,6 +30,12 @@ private const val COLOR_STATE_TOPIC = "wall/state/color"
 private const val COLOR_STATE_QOS = 1
 private const val STATUS_TOPIC_PREFIX = "wall/status/"
 private const val STATUS_QOS = 0
+private const val DEVICE_TOPIC_PREFIX = "wall/device/"
+private const val DEVICE_QOS = 1
+private const val READY_TOPIC_PREFIX = "wall/ready/"
+private const val READY_QOS = 1
+private const val ERROR_TOPIC_PREFIX = "wall/error/"
+private const val ERROR_QOS = 1
 private const val HEARTBEAT_INTERVAL_MS = 5000L
 
 // wall/control로 수신하는 제어 명령
@@ -68,6 +74,10 @@ sealed class MqttControlMessage {
     // wall/state/color(retain) - 재접속/재부팅 시 애니메이션 없이 즉시 적용하기 위한 현재 상태
     data class ColorState(val color: String) : MqttControlMessage()
     object ColorStateCleared : MqttControlMessage()
+
+    // wall/device/{deviceId}(retain) - manifest 기반으로 서버가 이 폰에 배정한 최신 config.
+    // wall/state/color와 같은 패턴: 재접속/재부팅해도 서버가 다시 보낼 필요 없이 retain으로 즉시 받는다.
+    data class DeviceConfig(val videoPath: String, val currentVideo: String) : MqttControlMessage()
 }
 
 /**
@@ -79,6 +89,7 @@ class MqttManager(
 ) {
     private var client: MqttAsyncClient? = null
     private var deviceId: Int = DEFAULT_DEVICE_ID
+    private var deviceTopic: String = ""
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -88,6 +99,7 @@ class MqttManager(
     fun connect() {
         val brokerUrl = readBrokerUrl()
         deviceId = readDeviceId()
+        deviceTopic = "$DEVICE_TOPIC_PREFIX$deviceId"
         val clientId = "mediasphere-${System.currentTimeMillis()}"
 
         try {
@@ -101,6 +113,7 @@ class MqttManager(
                     Log.d(TAG, if (reconnect) "브로커 재연결 성공 - $serverURI" else "브로커 연결 성공 - $serverURI")
                     subscribeControl()
                     subscribeColorState()
+                    subscribeDevice()
                     startHeartbeat()
                 }
 
@@ -115,6 +128,7 @@ class MqttManager(
                     when (topic) {
                         CONTROL_TOPIC -> parseControlMessage(payload)?.let(onControl)
                         COLOR_STATE_TOPIC -> parseColorState(payload)?.let(onControl)
+                        deviceTopic -> parseDeviceConfig(payload)?.let(onControl)
                         else -> Log.e(TAG, "알 수 없는 topic - $topic")
                     }
                 }
@@ -188,6 +202,27 @@ class MqttManager(
         }
     }
 
+    private fun subscribeDevice() {
+        try {
+            client?.subscribe(
+                deviceTopic,
+                DEVICE_QOS,
+                null,
+                object : IMqttActionListener {
+                    override fun onSuccess(asyncActionToken: IMqttToken?) {
+                        Log.d(TAG, "구독 완료 - $deviceTopic")
+                    }
+
+                    override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                        Log.e(TAG, "구독 실패 - $deviceTopic", exception)
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "구독 요청 실패 - $deviceTopic", e)
+        }
+    }
+
     private fun parseControlMessage(payload: String): MqttControlMessage? {
         return try {
             val json = JSONObject(payload)
@@ -239,6 +274,21 @@ class MqttManager(
             MqttControlMessage.ColorState(color = json.getString("color"))
         } catch (e: Exception) {
             Log.e(TAG, "컬러 상태 파싱 실패: $payload", e)
+            null
+        }
+    }
+
+    // wall/device/{deviceId}(retain) 전용 파서 - videoPath/currentVideo가 없으면 파싱 실패로 취급한다.
+    private fun parseDeviceConfig(payload: String): MqttControlMessage? {
+        if (payload.isEmpty()) return null
+        return try {
+            val json = JSONObject(payload)
+            MqttControlMessage.DeviceConfig(
+                videoPath = json.getString("videoPath"),
+                currentVideo = json.getString("currentVideo"),
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)
             null
         }
     }
@@ -295,6 +345,38 @@ class MqttManager(
             client?.publish(topic, payload.toByteArray(), STATUS_QOS, false)
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat 발행 실패 - $topic", e)
+        }
+    }
+
+    // 영상 파일 다운로드+체크섬 검증 성공 시 호출 - wall/ready/{deviceId}에 결과를 보고한다.
+    fun publishReady(file: String, checksum: String) {
+        val topic = "$READY_TOPIC_PREFIX$deviceId"
+        val payload = JSONObject().apply {
+            put("type", "READY")
+            put("file", file)
+            put("checksum", checksum)
+        }.toString()
+
+        try {
+            client?.publish(topic, payload.toByteArray(), READY_QOS, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "발행 실패 - $topic", e)
+        }
+    }
+
+    // 영상 파일 다운로드 실패 시 호출 - wall/error/{deviceId}에 사유를 보고한다.
+    fun publishError(reason: String, detail: String) {
+        val topic = "$ERROR_TOPIC_PREFIX$deviceId"
+        val payload = JSONObject().apply {
+            put("type", "ERROR")
+            put("reason", reason)
+            put("detail", detail)
+        }.toString()
+
+        try {
+            client?.publish(topic, payload.toByteArray(), ERROR_QOS, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "발행 실패 - $topic", e)
         }
     }
 

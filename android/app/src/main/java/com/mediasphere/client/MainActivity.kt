@@ -34,21 +34,30 @@ import com.mediasphere.client.network.TimecodeReceiver
 import com.mediasphere.client.pattern.PatternAnimator
 import com.mediasphere.client.sync.DriftCorrector
 import com.mediasphere.client.sync.TimeSyncManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
 
 private const val TAG = "[Player]"
 private const val PATTERN_TAG = "[Pattern]"
-private const val VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
+private const val SYNC_TAG = "[FileSync]"
+// config.json 읽기 실패 등으로 videoPath/currentVideo를 못 구했을 때만 쓰는 최후 fallback
+private const val DEFAULT_VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
 private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 대기 시간 - 초기 drift가 크게 나는 것을 방지
 private const val TIME_SYNC_INTERVAL_MS = 60_000L // TimeSyncManager 재동기화 주기 (1분)
 private const val CONFIG_PATH = "/sdcard/mediasphere/config.json"
 private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
 private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
 private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 횟수"라 9를 주면 총 10회 재생된다
+private const val SERVER_PORT = 3000
+private const val DOWNLOAD_TIMEOUT_MS = 15000
+private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN }
@@ -83,6 +92,9 @@ class MainActivity : ComponentActivity() {
 
     // SEQUENCE_START의 내 시작 시각까지 대기하는 코루틴 - 새 명령이 오면 이전 대기를 취소한다
     private var pendingSequenceJob: Job? = null
+
+    // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
+    private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
 
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
@@ -173,7 +185,7 @@ class MainActivity : ComponentActivity() {
         )
 
         player = ExoPlayer.Builder(this).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(File(VIDEO_PATH))))
+            setMediaItem(MediaItem.fromUri(Uri.fromFile(File(readInitialVideoPath()))))
             repeatMode = Player.REPEAT_MODE_ONE
             prepare() // prepare()만 호출 - play()는 서버 PLAY 명령이 올 때까지 호출하지 않는다
         }
@@ -193,8 +205,7 @@ class MainActivity : ComponentActivity() {
         })
         playerView.player = player
         playerView.useController = false
-        Log.d(TAG, "ExoPlayer 초기화 완료 - $VIDEO_PATH 준비 완료")
-        Log.d(TAG, "재생 대기 중")
+        Log.d(TAG, "ExoPlayer 초기화 완료 - 재생 대기 중")
 
         // UDP 멀티캐스트 타임코드 수신 시작 - 이제 드리프트 보정에만 사용한다
         timecodeReceiver = TimecodeReceiver(this) { timecode ->
@@ -268,6 +279,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // config.json의 videoPath+currentVideo로 초기 재생 파일 경로를 구성한다. 읽기 실패 시에만
+    // DEFAULT_VIDEO_PATH로 폴백한다 (최초 부팅 등 config.json이 아직 없는 경우 대비).
+    private fun readInitialVideoPath(): String {
+        return try {
+            val json = JSONObject(File(CONFIG_PATH).readText())
+            val videoPath = json.getString("videoPath")
+            val currentVideo = json.getString("currentVideo")
+            File(videoPath, "$currentVideo.mp4").path
+        } catch (e: Exception) {
+            Log.e(TAG, "config.json 읽기 실패 - 기본값($DEFAULT_VIDEO_PATH) 사용", e)
+            DEFAULT_VIDEO_PATH
+        }
+    }
+
+    // config.json에서 serverIp 값을 읽는다 (영상 다운로드 URL 조립에 사용). 실패하면 null.
+    private fun readServerIp(): String? {
+        return try {
+            JSONObject(File(CONFIG_PATH).readText()).getString("serverIp")
+        } catch (e: Exception) {
+            Log.e(SYNC_TAG, "config.json 읽기 실패 - serverIp 없음", e)
+            null
+        }
+    }
+
     // wall/control로 수신한 MQTT 명령을 처리한다.
     private fun handleControlMessage(message: MqttControlMessage) {
         when (message) {
@@ -297,9 +332,8 @@ class MainActivity : ComponentActivity() {
             is MqttControlMessage.Load -> {
                 Log.d(TAG, "LOAD 수신 (video=${message.video}) - 아직 미구현")
             }
-            MqttControlMessage.CheckUpdate -> {
-                Log.d(TAG, "CHECK_UPDATE 수신 - 아직 미구현")
-            }
+            MqttControlMessage.CheckUpdate -> handleCheckUpdate()
+            is MqttControlMessage.DeviceConfig -> handleDeviceConfig(message)
             MqttControlMessage.ModeVideo -> handleModeVideo()
             MqttControlMessage.ModePattern -> handleModePattern()
             is MqttControlMessage.PatternStart -> handlePatternStart(message)
@@ -557,6 +591,105 @@ class MainActivity : ComponentActivity() {
         player.play()
         playbackStarted = true
         Log.d(TAG, "재생 시작: startAt=$startAt")
+    }
+
+    // wall/device/{deviceId}(retain)로 새 config를 받았을 때 - 배정된 영상 파일을 동기화한다.
+    // retain 특성상 재접속/재부팅마다 같은 내용이 다시 올 수 있으므로, syncVideoFile 안에서
+    // 파일이 이미 있으면 재다운로드 없이 체크섬만 다시 계산해 보고한다 (멱등).
+    private fun handleDeviceConfig(message: MqttControlMessage.DeviceConfig) {
+        lastDeviceConfig = message
+        syncVideoFile(message.videoPath, message.currentVideo)
+    }
+
+    // CHECK_UPDATE - 서버가 "지금 파일 상태를 다시 확인해서 보고해줘"라고 요청할 때 수신.
+    // 아직 DeviceConfig를 한 번도 못 받았으면(예: manifest 배치 전) 검증할 대상이 없어 무시한다.
+    private fun handleCheckUpdate() {
+        val config = lastDeviceConfig
+        if (config == null) {
+            Log.d(SYNC_TAG, "CHECK_UPDATE 수신 - 아직 배정된 config 없음, 스킵")
+            return
+        }
+        syncVideoFile(config.videoPath, config.currentVideo)
+    }
+
+    // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드하고, 있으면 그대로
+    // 체크섬만 계산한다. 결과를 wall/ready(성공) 또는 wall/error(실패)로 보고한다.
+    private fun syncVideoFile(videoPath: String, currentVideo: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val dest = File(videoPath, "$currentVideo.mp4")
+            val serverIp = readServerIp()
+
+            val checksum = if (dest.exists()) {
+                sha256Of(dest)
+            } else if (serverIp == null) {
+                Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
+                null
+            } else {
+                downloadAndVerify(serverIp, currentVideo, dest)
+            }
+
+            if (checksum != null) {
+                mqttManager.publishReady("$currentVideo.mp4", "sha256:$checksum")
+                Log.d(SYNC_TAG, "동기화 완료 - $currentVideo (checksum=$checksum)")
+            } else {
+                mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드/검증 실패")
+            }
+        }
+    }
+
+    // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤
+    // 완료되면 최종 경로로 옮겨서, 다운로드 도중 실패해도 손상된 파일이 dest에 남지 않게 한다.
+    private fun downloadAndVerify(serverIp: String, currentVideo: String, dest: File): String? {
+        val tmpFile = File(dest.parentFile, "${dest.name}.download")
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = URL("http://$serverIp:$SERVER_PORT/clips/$currentVideo.mp4")
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = DOWNLOAD_TIMEOUT_MS
+                readTimeout = DOWNLOAD_TIMEOUT_MS
+            }
+
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                Log.e(SYNC_TAG, "다운로드 실패 - HTTP ${connection.responseCode}: $url")
+                return null
+            }
+
+            dest.parentFile?.mkdirs()
+            val digest = MessageDigest.getInstance("SHA-256")
+            connection.inputStream.use { input ->
+                tmpFile.outputStream().use { output ->
+                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        digest.update(buffer, 0, read)
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+            tmpFile.renameTo(dest)
+            digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.e(SYNC_TAG, "다운로드 실패 - $currentVideo", e)
+            tmpFile.delete()
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     // MANAGE_EXTERNAL_STORAGE 권한(API 30+)이 없으면 설정 화면으로 이동해 요청한다.

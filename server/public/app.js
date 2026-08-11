@@ -1,6 +1,7 @@
 const RECONNECT_DELAY_MS = 3000;
 
 const onlineCountEl = document.getElementById('online-count');
+const fileStatusCountEl = document.getElementById('file-status-count');
 const playStateEl = document.getElementById('play-state');
 const timecodeEl = document.getElementById('timecode');
 const gridEl = document.getElementById('device-grid');
@@ -65,6 +66,9 @@ function applyStatusUpdate(data) {
   const currentColorHex = data.currentColor && data.currentColor.color;
 
   const offlineIds = [];
+  const fileStatus = data.fileStatus || {};
+  const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
+
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
 
@@ -78,9 +82,17 @@ function applyStatusUpdate(data) {
       }
     }
 
+    const fStatus = fileStatus[id] || 'unknown';
+    fileCounts[fStatus] = (fileCounts[fStatus] || 0) + 1;
+    const cell = cellRefs[id];
+    if (cell) cell.classList.toggle('mismatch', fStatus === 'mismatch');
+
     if (status === 'offline') offlineIds.push(id);
   }
   lastDevices = data.devices;
+
+  fileStatusCountEl.textContent =
+    `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
 
   offlineListEl.textContent = offlineIds.length > 0 ? offlineIds.join(', ') : '없음';
 
