@@ -1,7 +1,7 @@
 # MediaSphere — CLAUDE.md
 
 ## 프로젝트 정의
-439대 Galaxy A15를 지름 2m 구체에 배치하고
+439대 Galaxy A15를 지름 1.8m 구체에 배치하고
 마스터 서버(Node.js)가 UDP 멀티캐스트로 타임코드를
 브로드캐스트하여 360도 영상을 정밀 동기화 재생하는
 미디어 설치 시스템.
@@ -60,6 +60,33 @@ MediaSphere/
 │                     오프라인 도구, 서버 런타임과 별도 실행. 외부 패키지 없음
 │                     (단, preview_rig.py만 Pillow 필요)
 └── docs/          ← 문서
+
+## 영상 분할 표준 워크플로우
+매번 원본 영상이 바뀔 때마다 반복하는 순서. tiles.json은
+"이 해상도의 원본"을 전제로 좌표가 박제되므로, 원본 해상도가
+바뀌면 반드시 다시 생성해야 함 (재사용 금지).
+
+1. 원본 해상도 확인
+   ffprobe -v error -select_streams v:0 \
+     -show_entries stream=width,height master.mp4
+
+2. 그 해상도에 맞춰 tiles.json 생성
+   - 배치(cols/rows)와 리그 피치(--pitch, 현재 110x200mm)는 고정
+   - --downscale 값만 원본 해상도에 맞게 역산 (요구 원본 크기 / 실제 원본 크기)
+   예)
+   python3 gen_tiles.py flat --cols 20 --rows 5 --pitch 110x200 \
+     --downscale 8.94 -o tiles/tiles_flat100.json
+
+3. 자르기
+   python3 slice_video.py -i master.mp4 -t tiles/tiles_flat100.json \
+     -o out/ --encoder hevc_nvenc -j 6
+
+주의: tiles.json의 source.width/height와 실제 master.mp4 해상도가
+일치해야 crop 좌표가 정확함. 확대율(report에 출력됨)이 크면
+화질 저하 신호 — 15대 테스트 시 확대율 ~8배가 실사용 기준으로 확인됨.
+
+향후: 위 3단계를 해상도 자동 감지 + downscale 자동 계산까지
+묶어 원클릭 스크립트로 만드는 것 검토 (미구현)
 
 ## 앱 동작 모드
 세 가지 모드. 모드 전환 시 이전 모드는 완전히 비활성화.
@@ -182,9 +209,11 @@ MediaSphere/
               [ ] manifest.json → 폰별 config.json 자동 생성/배포 (미구현)
               [ ] 폰 파일 수신 검증 (체크섬/heartbeat) (미구현)
               [ ] 대시보드 연동 (업로드 → 분할 → 진행률) (미구현)
-        [ ] 100대 확장 테스트 (다음 목표)
-              15대 → 100대 스케일업
-              네트워크/동기화 안정성 재검증
+        [ ] 100대 확장 테스트 (진행 중)
+              15대 → 100대 스케일업 (20열 x 5행 배치)
+              [x] tiles.json 생성 (4K 원본 기준, 확대율 9.0배로 15대와 유사)
+              [ ] 4K 원본 영상으로 실제 slice_video.py 실행
+             네트워크/동기화 안정성 재검증
         [ ] 텍스트 스크롤 (신규)
               서버 대시보드에서 텍스트 입력 → 구체 표면을 텍스트가 흐름
               각 폰의 위도/경도 기반으로 서버가 startDelay 계산
@@ -235,3 +264,4 @@ MediaSphere/
 각 기능 완성 후 내가 "커밋해줘"라고 하면
 적절한 메시지로 git commit 실행.
 자동 커밋은 하지 말 것.
+
