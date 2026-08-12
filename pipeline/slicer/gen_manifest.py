@@ -2,13 +2,18 @@
 """
 MediaSphere - 배포 매니페스트 생성기
 
-slice_video.py 가 출력한 manifest.json(files 배열)을 입력받아,
+slice_video.py 가 출력한 slice_manifest.json(files 배열)을 입력받아,
 폰별 deviceId/SSID/체크섬을 채운 배포용 manifest.json을 만든다.
 이 출력은 gen_configs.py 의 입력이자, 서버가 파일 수신 검증에 쓰는
 "기대값" 원본이 된다.
 
+주의: 입력(slice_manifest.json)과 출력(manifest.json)은 이름이 다른 별개 파일이다.
+서버(server.js)가 실제로 읽는 건 이 스크립트의 출력물(-o로 지정한 경로)뿐이다 -
+slice_video.py의 slice_manifest.json만 있고 이 스크립트를 안 돌리면 서버는
+배포 대상이 없는 것으로 취급한다. 세 단계를 한 번에 실행하려면 deploy.py를 쓴다.
+
 사용 예:
-  python3 gen_manifest.py -i out/manifest.json --ap-count 15 -o distribute/manifest.json
+  python3 gen_manifest.py -i out/slice_manifest.json --ap-count 15 -o distribute/manifest.json
 """
 import argparse
 import datetime
@@ -71,7 +76,7 @@ def assign_ssids(devices, ap_count):
 def main():
     ap = argparse.ArgumentParser(description="MediaSphere 배포 매니페스트 생성기")
     ap.add_argument("-i", "--input", required=True,
-                     help="slice_video.py가 출력한 manifest.json 경로")
+                     help="slice_video.py가 출력한 slice_manifest.json 경로")
     ap.add_argument("--ap-count", type=int, required=True,
                      help="현장 AP(SSID) 대수. 폰을 이 수만큼 연속 블록으로 균등 분배")
     ap.add_argument("-o", "--out", default="distribute/manifest.json")

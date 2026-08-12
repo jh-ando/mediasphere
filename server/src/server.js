@@ -115,7 +115,11 @@ const deviceFileState = {};
 
 function loadManifest() {
   if (!fs.existsSync(MANIFEST_PATH)) {
-    console.log(`[HTTP] ${MANIFEST_PATH} 없음 - 파일 배포/검증 기능은 manifest 배치 전까지 비활성 상태`);
+    console.log(
+      `[HTTP] ${MANIFEST_PATH} 없음 - 파일 배포/검증 기능 비활성 상태. ` +
+      'pipeline/slicer/deploy.py (또는 gen_manifest.py) 실행 여부 확인 - ' +
+      'videos/slice_manifest.json만 있고 이 경로의 manifest.json이 없는 게 흔한 원인입니다.',
+    );
     manifest = null;
     manifestByDeviceId = {};
     return;
@@ -570,7 +574,12 @@ app.get('/api/config/:deviceId', (req, res) => {
 app.post('/api/distribute/publish', (req, res) => {
   loadManifest();
   if (!manifest) {
-    res.status(400).json({ ok: false, error: `manifest.json이 없습니다: ${MANIFEST_PATH}` });
+    res.status(400).json({
+      ok: false,
+      error: `manifest.json이 없습니다: ${MANIFEST_PATH} - `
+        + 'pipeline/slicer/deploy.py(또는 gen_manifest.py)를 먼저 실행했는지 확인하세요. '
+        + 'slice_video.py가 만드는 videos/slice_manifest.json과는 다른 파일입니다.',
+    });
     return;
   }
 

@@ -252,9 +252,12 @@ def main():
                    "width": sizes[t["id"]][0], "height": sizes[t["id"]][1],
                    "meta": t.get("meta", {})} for t in tiles],
     }
-    mp = os.path.join(a.outdir, "manifest.json")
+    # gen_manifest.py 최종 산출물과 이름이 같으면 헷갈리므로(둘 다 "manifest.json"이면
+    # distribute/manifest.json이 없는데 videos/manifest.json만 있는 걸 최종본으로 착각하기 쉽다)
+    # slice_manifest.json으로 구분한다. 이 파일이 gen_manifest.py -i 의 입력이다.
+    mp = os.path.join(a.outdir, "slice_manifest.json")
     json.dump(man, open(mp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    print(f"[i] {mp} 생성 — config.json 배포에 사용")
+    print(f"[i] {mp} 생성 - gen_manifest.py 입력으로 사용")
 
 
 if __name__ == "__main__":
