@@ -7,10 +7,12 @@ server/distribute/ 를 한 번에 채운다. 한 단계라도 실패(0이 아닌
 즉시 멈춘다 - 예전에 slice_video.py만 돌리고 gen_manifest.py를 빼먹어서
 서버가 manifest.json을 못 찾은 사고가 있었는데, 이 스크립트를 쓰면 그럴 수 없다.
 
-사용 예:
+사용 예 (-o는 웬만하면 주지 말 것 - 기본값이 실행 위치와 무관하게 항상
+server/distribute/를 정확히 가리킨다. 상대경로를 직접 계산해서 -o에 넣다가
+엉뚱한 곳에 결과물이 생기는 사고가 실제로 여러 번 있었다):
   python3 deploy.py -i master.mp4 -t tiles/tiles_flat100_pitch4k.json \
       --ap-count 15 --base-config base-config.example.json \
-      -o ../../server/distribute --encoder hevc_nvenc
+      --encoder hevc_nvenc
 
 --dry-run을 주면 slice_video.py만 --dry-run으로 돌려 ffmpeg 명령을 확인하고
 (실제 영상 파일이 없으므로) gen_manifest.py/gen_configs.py는 건너뛴다.
@@ -44,7 +46,9 @@ def main():
     ap.add_argument("--base-config", required=True,
                      help="전 폰 공통 config 값 (base-config.example.json 참고)")
     ap.add_argument("-o", "--outdir", default=os.path.join(HERE, "..", "..", "server", "distribute"),
-                     help="기본값: server/distribute/")
+                     help="기본값이 항상 정확한 server/distribute/를 가리키므로 "
+                          "웬만하면 이 옵션을 주지 마세요. 꼭 바꿔야 한다면 절대경로를 쓰세요 - "
+                          "상대경로는 실행 위치(cwd) 기준으로 풀려서 엉뚱한 곳에 생길 수 있습니다.")
     ap.add_argument("--encoder", default="libx264", help="slice_video.py로 그대로 전달")
     ap.add_argument("--quality", type=int, default=20, help="slice_video.py로 그대로 전달")
     ap.add_argument("-j", "--jobs", type=int, default=4, help="slice_video.py로 그대로 전달")
