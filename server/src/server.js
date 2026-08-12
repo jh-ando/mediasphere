@@ -799,6 +799,12 @@ setInterval(() => {
   });
 }, STATUS_BROADCAST_MS);
 
+// 배포 파이프라인(deploy.py 등)이 상대경로 -o를 실행 위치에 따라 엉뚱한 곳에
+// 풀어버려서 서버가 못 찾는 사고가 실제로 있었다 - 서버가 실제로 보는 절대경로를
+// 시작 시 한 번 찍어서, distribute/apk 위치가 기대와 다르면 바로 눈에 띄게 한다.
+console.log(`[HTTP] DISTRIBUTE_DIR = ${DISTRIBUTE_DIR}`);
+console.log(`[HTTP] APK_DIR = ${APK_DIR}`);
+
 httpServer.listen(HTTP_PORT, () => {
   console.log(`[HTTP] 서버 시작 - http://localhost:${HTTP_PORT}`);
 });

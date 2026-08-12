@@ -60,6 +60,13 @@ def main():
     if not a.skip_slice and (not a.input or not a.tiles):
         ap.error("-i/--input과 -t/--tiles는 --skip-slice가 아니면 필수입니다.")
 
+    # -o에 상대경로를 주면 "어디서 실행했는지"에 따라 전혀 다른 곳에 쓰일 수 있다
+    # (예: pipeline/ 안에서 실행하면 -o server/distribute가 pipeline/server/distribute로
+    # 풀려버려서, __dirname 기준으로 절대경로를 쓰는 server.js가 못 찾는 사고가 실제로 있었다).
+    # 그래서 여기서 절대경로로 못박고, 실행 시작하자마자 눈에 띄게 출력한다.
+    a.outdir = os.path.abspath(a.outdir)
+    print(f"[deploy] 출력 위치(절대경로) = {a.outdir}", file=sys.stderr)
+
     python = sys.executable
     videos_dir = os.path.join(a.outdir, "videos")
     slice_manifest = os.path.join(videos_dir, "slice_manifest.json")

@@ -81,7 +81,10 @@ sealed class MqttControlMessage {
 
     // wall/device/{deviceId}(retain) - manifest 기반으로 서버가 이 폰에 배정한 최신 config.
     // wall/state/color와 같은 패턴: 재접속/재부팅해도 서버가 다시 보낼 필요 없이 retain으로 즉시 받는다.
-    data class DeviceConfig(val videoPath: String, val currentVideo: String) : MqttControlMessage()
+    // checksum: 로컬에 같은 파일명이 이미 있어도 무조건 믿지 않고 이 값과 비교하기 위함
+    // (없으면 null - 옛 manifest이거나 gen_manifest.py --skip-checksum인 경우).
+    data class DeviceConfig(val videoPath: String, val currentVideo: String, val checksum: String?) :
+        MqttControlMessage()
 
     // wall/ota(retain) - 새 APK 배포 신호. stepDelayMs는 SEQUENCE_START와 동일하게
     // (deviceId-1)*stepDelayMs 만큼 폰마다 스스로 시차를 계산하는 롤링 배포용.
@@ -324,6 +327,7 @@ class MqttManager(
             MqttControlMessage.DeviceConfig(
                 videoPath = json.getString("videoPath"),
                 currentVideo = json.getString("currentVideo"),
+                checksum = if (json.has("checksum")) json.getString("checksum") else null,
             )
         } catch (e: Exception) {
             Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)

@@ -124,7 +124,7 @@ def main():
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=2, ensure_ascii=False)
 
-    print(f"[OK] {a.out} - 디바이스 {len(devices)}대, AP {a.ap_count}대", file=sys.stderr)
+    print(f"[OK] {os.path.abspath(a.out)} - 디바이스 {len(devices)}대, AP {a.ap_count}대", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -605,10 +605,10 @@ class MainActivity : ComponentActivity() {
 
     // wall/device/{deviceId}(retain)로 새 config를 받았을 때 - 배정된 영상 파일을 동기화한다.
     // retain 특성상 재접속/재부팅마다 같은 내용이 다시 올 수 있으므로, syncVideoFile 안에서
-    // 파일이 이미 있으면 재다운로드 없이 체크섬만 다시 계산해 보고한다 (멱등).
+    // 파일이 이미 있고 체크섬도 기대값과 같으면 재다운로드 없이 그대로 보고한다 (멱등).
     private fun handleDeviceConfig(message: MqttControlMessage.DeviceConfig) {
         lastDeviceConfig = message
-        syncVideoFile(message.videoPath, message.currentVideo)
+        syncVideoFile(message.videoPath, message.currentVideo, message.checksum)
     }
 
     // CHECK_UPDATE - 서버가 "지금 파일 상태를 다시 확인해서 보고해줘"라고 요청할 때 수신.
@@ -619,23 +619,36 @@ class MainActivity : ComponentActivity() {
             Log.d(SYNC_TAG, "CHECK_UPDATE 수신 - 아직 배정된 config 없음, 스킵")
             return
         }
-        syncVideoFile(config.videoPath, config.currentVideo)
+        syncVideoFile(config.videoPath, config.currentVideo, config.checksum)
     }
 
-    // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드하고, 있으면 그대로
-    // 체크섬만 계산한다. 결과를 wall/ready(성공) 또는 wall/error(실패)로 보고한다.
-    private fun syncVideoFile(videoPath: String, currentVideo: String) {
+    // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드한다. 파일이 이미
+    // 있어도 expectedChecksum이 주어졌는데 로컬 체크섬과 다르면(서버가 같은 파일명으로 다른
+    // 영상을 재배포한 경우) 무조건 재다운로드한다 - expectedChecksum이 없으면(옛 manifest 등)
+    // 예전처럼 "있으면 믿는다"로 동작한다. 결과를 wall/ready(성공) 또는 wall/error(실패)로 보고한다.
+    private fun syncVideoFile(videoPath: String, currentVideo: String, expectedChecksum: String?) {
         lifecycleScope.launch(Dispatchers.IO) {
             val dest = File(videoPath, "$currentVideo.mp4")
             val serverIp = readServerIp()
+            val expected = expectedChecksum?.removePrefix("sha256:")
 
-            val checksum = if (dest.exists()) {
-                sha256Of(dest)
-            } else if (serverIp == null) {
-                Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
-                null
-            } else {
-                downloadAndVerify(serverIp, currentVideo, dest)
+            var checksum: String? = null
+            if (dest.exists()) {
+                val localChecksum = sha256Of(dest)
+                if (expected == null || localChecksum == expected) {
+                    checksum = localChecksum
+                } else {
+                    Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
+                }
+            }
+
+            if (checksum == null) {
+                checksum = if (serverIp == null) {
+                    Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
+                    null
+                } else {
+                    downloadAndVerify(serverIp, currentVideo, dest)
+                }
             }
 
             if (checksum != null) {
