@@ -14,6 +14,11 @@ server/distribute/ 를 한 번에 채운다. 한 단계라도 실패(0이 아닌
 
 --dry-run을 주면 slice_video.py만 --dry-run으로 돌려 ffmpeg 명령을 확인하고
 (실제 영상 파일이 없으므로) gen_manifest.py/gen_configs.py는 건너뛴다.
+
+--skip-slice를 주면 slice_video.py(가장 오래 걸리는 GPU 인코딩 단계)를 건너뛰고
+이미 만들어둔 {outdir}/videos/slice_manifest.json으로 gen_manifest.py부터 이어서
+실행한다 - AP 대수나 base-config만 바뀌어서 영상은 그대로 재사용할 때 쓴다.
+이때는 -i/-t가 필요 없다.
 """
 import argparse
 import os
@@ -33,8 +38,8 @@ def run(cmd):
 
 def main():
     ap = argparse.ArgumentParser(description="MediaSphere 배포 파이프라인 원클릭 실행기")
-    ap.add_argument("-i", "--input", required=True, help="원본 영상 (master.mp4)")
-    ap.add_argument("-t", "--tiles", required=True, help="tiles.json (gen_tiles.py 결과)")
+    ap.add_argument("-i", "--input", help="원본 영상 (master.mp4). --skip-slice면 불필요")
+    ap.add_argument("-t", "--tiles", help="tiles.json (gen_tiles.py 결과). --skip-slice면 불필요")
     ap.add_argument("--ap-count", type=int, required=True, help="현장 AP(SSID) 대수")
     ap.add_argument("--base-config", required=True,
                      help="전 폰 공통 config 값 (base-config.example.json 참고)")
@@ -45,25 +50,40 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=4, help="slice_video.py로 그대로 전달")
     ap.add_argument("--dry-run", action="store_true",
                      help="slice_video.py만 --dry-run으로 실행하고 이후 단계는 생략")
+    ap.add_argument("--skip-slice", action="store_true",
+                     help="이미 잘라둔 영상을 재사용 - slice_video.py를 건너뛰고 "
+                          "{outdir}/videos/slice_manifest.json부터 이어서 실행")
     a = ap.parse_args()
+
+    if a.skip_slice and a.dry_run:
+        ap.error("--skip-slice와 --dry-run은 같이 쓸 수 없습니다.")
+    if not a.skip_slice and (not a.input or not a.tiles):
+        ap.error("-i/--input과 -t/--tiles는 --skip-slice가 아니면 필수입니다.")
 
     python = sys.executable
     videos_dir = os.path.join(a.outdir, "videos")
-
-    slice_cmd = [
-        python, os.path.join(HERE, "slice_video.py"),
-        "-i", a.input, "-t", a.tiles, "-o", videos_dir,
-        "--encoder", a.encoder, "--quality", str(a.quality), "-j", str(a.jobs),
-    ]
-    if a.dry_run:
-        slice_cmd.append("--dry-run")
-    run(slice_cmd)
-
-    if a.dry_run:
-        print("[deploy] --dry-run - gen_manifest.py/gen_configs.py는 생략", file=sys.stderr)
-        return
-
     slice_manifest = os.path.join(videos_dir, "slice_manifest.json")
+
+    if a.skip_slice:
+        if not os.path.isfile(slice_manifest):
+            print(f"[deploy] 중단 - --skip-slice인데 {slice_manifest}가 없습니다. "
+                  f"먼저 slice_video.py(또는 --skip-slice 없이 deploy.py)를 실행하세요.", file=sys.stderr)
+            sys.exit(1)
+        print(f"[deploy] --skip-slice - {slice_manifest} 재사용", file=sys.stderr)
+    else:
+        slice_cmd = [
+            python, os.path.join(HERE, "slice_video.py"),
+            "-i", a.input, "-t", a.tiles, "-o", videos_dir,
+            "--encoder", a.encoder, "--quality", str(a.quality), "-j", str(a.jobs),
+        ]
+        if a.dry_run:
+            slice_cmd.append("--dry-run")
+        run(slice_cmd)
+
+        if a.dry_run:
+            print("[deploy] --dry-run - gen_manifest.py/gen_configs.py는 생략", file=sys.stderr)
+            return
+
     final_manifest = os.path.join(a.outdir, "manifest.json")
     run([
         python, os.path.join(HERE, "gen_manifest.py"),
