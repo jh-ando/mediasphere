@@ -169,6 +169,12 @@ def main():
         list_devices()
         return
 
+    # 이 파일 자체가 실제로 어디 있는지, 그래서 configs를 어디서 찾는지 실행하자마자 보여준다 -
+    # 레포가 여러 위치에 중복 체크아웃돼 있을 때 "분명히 있는데 없다고 뜬다"는 혼선을 방지.
+    a.configs_dir = os.path.abspath(a.configs_dir)
+    print(f"[i] 이 스크립트 위치 = {os.path.abspath(__file__)}", file=sys.stderr)
+    print(f"[i] configs 폴더 = {a.configs_dir}", file=sys.stderr)
+
     if a.sequential:
         if a.device_id is not None or a.serial:
             ap.error("--sequential은 deviceId/--serial과 함께 쓸 수 없습니다.")
