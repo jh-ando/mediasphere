@@ -34,6 +34,7 @@ import com.mediasphere.client.network.TimecodeReceiver
 import com.mediasphere.client.pattern.PatternAnimator
 import com.mediasphere.client.sync.DriftCorrector
 import com.mediasphere.client.sync.TimeSyncManager
+import com.mediasphere.client.update.UpdateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var colorOverlayView: View
     private lateinit var timecodeReceiver: TimecodeReceiver
     private lateinit var mqttManager: MqttManager
+    private lateinit var updateManager: UpdateManager
 
     // 키오스크 스트레스 컬러 오버레이 설정/상태
     private var colorOverlayAlpha: Float = DEFAULT_COLOR_OVERLAY_ALPHA
@@ -232,6 +234,7 @@ class MainActivity : ComponentActivity() {
                 handleControlMessage(message)
             }
         }
+        updateManager = UpdateManager(this, mqttManager)
         mqttManager.connect()
     }
 
@@ -340,6 +343,7 @@ class MainActivity : ComponentActivity() {
             }
             MqttControlMessage.CheckUpdate -> handleCheckUpdate()
             is MqttControlMessage.DeviceConfig -> handleDeviceConfig(message)
+            is MqttControlMessage.UpdateApk -> updateManager.handleUpdate(message)
             MqttControlMessage.ModeVideo -> handleModeVideo()
             MqttControlMessage.ModePattern -> handleModePattern()
             is MqttControlMessage.PatternStart -> handlePatternStart(message)

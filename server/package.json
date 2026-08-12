@@ -4,9 +4,11 @@
   "description": "MediaSphere 마스터 서버 - UDP 멀티캐스트 타임코드 브로드캐스트",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "publish-apk": "node scripts/publish-apk.js"
   },
   "dependencies": {
+    "app-info-parser": "^1.1.6",
     "express": "^4.19.2",
     "mqtt": "^5.15.2",
     "ws": "^8.21.0"

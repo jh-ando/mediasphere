@@ -1,7 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// OTA(무인 업데이트)가 성립하려면 release APK가 매번 같은 keystore로 서명돼야 한다 -
+// 서명이 다르면 Android가 설치를 거부한다(INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+// keystore.properties는 커밋하지 않는다(.gitignore) - keystore.properties.example 참고.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseSigning = keystorePropertiesFile.exists()
 
 android {
     namespace = "com.mediasphere.client"
@@ -19,8 +32,27 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "[!] keystore.properties 없음 - release 빌드가 서명되지 않습니다. " +
+                        "OTA로 배포하려면 keystore.properties.example을 참고해 설정하세요.",
+                )
+            }
             optimization {
                 enable = false
             }
@@ -32,6 +64,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true // UpdateManager가 BuildConfig.VERSION_CODE로 OTA 다운그레이드를 막는 데 사용
     }
 }
 

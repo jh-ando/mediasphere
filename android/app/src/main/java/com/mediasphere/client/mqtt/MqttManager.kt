@@ -36,6 +36,10 @@ private const val READY_TOPIC_PREFIX = "wall/ready/"
 private const val READY_QOS = 1
 private const val ERROR_TOPIC_PREFIX = "wall/error/"
 private const val ERROR_QOS = 1
+private const val OTA_TOPIC = "wall/ota"
+private const val OTA_QOS = 1
+private const val OTA_STATUS_TOPIC_PREFIX = "wall/ota/status/"
+private const val OTA_STATUS_QOS = 1
 private const val HEARTBEAT_INTERVAL_MS = 5000L
 
 // wall/control로 수신하는 제어 명령
@@ -78,6 +82,17 @@ sealed class MqttControlMessage {
     // wall/device/{deviceId}(retain) - manifest 기반으로 서버가 이 폰에 배정한 최신 config.
     // wall/state/color와 같은 패턴: 재접속/재부팅해도 서버가 다시 보낼 필요 없이 retain으로 즉시 받는다.
     data class DeviceConfig(val videoPath: String, val currentVideo: String) : MqttControlMessage()
+
+    // wall/ota(retain) - 새 APK 배포 신호. stepDelayMs는 SEQUENCE_START와 동일하게
+    // (deviceId-1)*stepDelayMs 만큼 폰마다 스스로 시차를 계산하는 롤링 배포용.
+    data class UpdateApk(
+        val versionCode: Int,
+        val versionName: String,
+        val url: String,
+        val sha256: String,
+        val startAt: Long,
+        val stepDelayMs: Long,
+    ) : MqttControlMessage()
 }
 
 /**
@@ -114,6 +129,7 @@ class MqttManager(
                     subscribeControl()
                     subscribeColorState()
                     subscribeDevice()
+                    subscribeOta()
                     startHeartbeat()
                 }
 
@@ -129,6 +145,7 @@ class MqttManager(
                         CONTROL_TOPIC -> parseControlMessage(payload)?.let(onControl)
                         COLOR_STATE_TOPIC -> parseColorState(payload)?.let(onControl)
                         deviceTopic -> parseDeviceConfig(payload)?.let(onControl)
+                        OTA_TOPIC -> parseOtaUpdate(payload)?.let(onControl)
                         else -> Log.e(TAG, "알 수 없는 topic - $topic")
                     }
                 }
@@ -223,6 +240,27 @@ class MqttManager(
         }
     }
 
+    private fun subscribeOta() {
+        try {
+            client?.subscribe(
+                OTA_TOPIC,
+                OTA_QOS,
+                null,
+                object : IMqttActionListener {
+                    override fun onSuccess(asyncActionToken: IMqttToken?) {
+                        Log.d(TAG, "구독 완료 - $OTA_TOPIC")
+                    }
+
+                    override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                        Log.e(TAG, "구독 실패 - $OTA_TOPIC", exception)
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "구독 요청 실패 - $OTA_TOPIC", e)
+        }
+    }
+
     private fun parseControlMessage(payload: String): MqttControlMessage? {
         return try {
             val json = JSONObject(payload)
@@ -289,6 +327,25 @@ class MqttManager(
             )
         } catch (e: Exception) {
             Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)
+            null
+        }
+    }
+
+    // wall/ota(retain) 전용 파서. 빈 payload는 무시한다(color state와 달리 "삭제" 의미로 쓰지 않음).
+    private fun parseOtaUpdate(payload: String): MqttControlMessage? {
+        if (payload.isEmpty()) return null
+        return try {
+            val json = JSONObject(payload)
+            MqttControlMessage.UpdateApk(
+                versionCode = json.getInt("versionCode"),
+                versionName = json.getString("versionName"),
+                url = json.getString("url"),
+                sha256 = json.getString("sha256"),
+                startAt = json.getLong("startAt"),
+                stepDelayMs = json.optLong("stepDelayMs", 0L),
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "OTA 업데이트 파싱 실패: $payload", e)
             null
         }
     }
@@ -375,6 +432,24 @@ class MqttManager(
 
         try {
             client?.publish(topic, payload.toByteArray(), ERROR_QOS, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "발행 실패 - $topic", e)
+        }
+    }
+
+    // OTA 진행 상태를 wall/ota/status/{deviceId}에 보고한다 (retain 아님 - 매번 최신 상태만 의미 있음).
+    // phase: "downloading" | "installing" | "done" | "failed"
+    fun publishOtaStatus(versionCode: Int, phase: String, reason: String? = null) {
+        val topic = "$OTA_STATUS_TOPIC_PREFIX$deviceId"
+        val payload = JSONObject().apply {
+            put("type", "OTA_STATUS")
+            put("versionCode", versionCode)
+            put("phase", phase)
+            if (reason != null) put("reason", reason)
+        }.toString()
+
+        try {
+            client?.publish(topic, payload.toByteArray(), OTA_STATUS_QOS, false)
         } catch (e: Exception) {
             Log.e(TAG, "발행 실패 - $topic", e)
         }

@@ -13,6 +13,9 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+    <!-- OTA 무인 설치(PackageInstaller)용. Device Owner 상태에서는 이 권한 선언 없이도
+         설치가 되는 것으로 보이나, 문서상 애매해 우선 선언해둠 - 실기기 테스트 후 불필요하면 제거 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:usesCleartextTraffic="true"
@@ -38,6 +41,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- OTA로 앱이 갱신된 직후 시스템이 보내는 브로드캐스트 - MainActivity를 재실행한다 -->
+        <receiver
+            android:name=".update.UpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

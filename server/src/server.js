@@ -25,6 +25,9 @@ const MQTT_STATUS_TOPIC_FILTER = 'wall/status/+';
 const MQTT_READY_TOPIC_FILTER = 'wall/ready/+';
 const MQTT_ERROR_TOPIC_FILTER = 'wall/error/+';
 const MQTT_DEVICE_TOPIC_PREFIX = 'wall/device/';
+const MQTT_OTA_TOPIC = 'wall/ota';
+const MQTT_OTA_STATUS_TOPIC_FILTER = 'wall/ota/status/+';
+const DEFAULT_OTA_STEP_DELAY_MS = 200; // 롤링 배포 - 폰마다 (deviceId-1)*stepDelayMs 만큼 시차를 둔다
 const TOTAL_DEVICES = 499; // 구체 배치 위도별 합산(25+40+50*7+40+25+15+4) 기준. 이전엔 500으로 잘못돼 있었음
 const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline 처리
 const STATUS_BROADCAST_MS = 1000;
@@ -32,6 +35,7 @@ const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.j
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
+const DEFAULT_OTA_LEAD_TIME_MS = 3000; // 다운로드+설치 파이프라인 전체를 트리거하므로 컬러 전환보다 여유를 더 둠
 
 // ── 파일 배포(manifest/config/영상) 경로 ──────────────────
 // pipeline/slicer의 gen_manifest.py, gen_configs.py가 이 구조로 결과물을 채워 넣는 것을 전제로 한다:
@@ -42,6 +46,13 @@ const DISTRIBUTE_DIR = path.join(__dirname, '..', 'distribute');
 const MANIFEST_PATH = path.join(DISTRIBUTE_DIR, 'manifest.json');
 const CONFIGS_DIR = path.join(DISTRIBUTE_DIR, 'configs');
 const VIDEOS_DIR = path.join(DISTRIBUTE_DIR, 'videos');
+
+// ── APK 배포(OTA) 경로 ────────────────────────────────
+// scripts/publish-apk.js가 APK를 넣고 이 파일을 갱신하는 것을 전제로 한다.
+// 서버 프로세스는 이 값을 캐시하지 않고 매 요청마다 새로 읽는다 - publish-apk.js가
+// 별도 프로세스로 실행되므로, 서버가 시작 시점 값을 들고 있으면 갱신을 못 본다.
+const APK_DIR = path.join(__dirname, '..', 'apk');
+const APK_VERSION_PATH = path.join(__dirname, '..', 'data', 'app-version.json');
 
 // ── 재생 상태 ────────────────────────────────────────
 // isPlaying: 재생 중 여부
@@ -215,6 +226,44 @@ function publishDeviceConfigs() {
   return count;
 }
 
+// ── APK 버전 정보 (OTA) ──────────────────────────────
+// publish-apk.js가 쓰는 app-version.json을 매 요청마다 새로 읽는다 (loadManifest처럼
+// 시작 시 한 번만 캐시하지 않음 - publish-apk.js는 서버와 별도 프로세스로 실행되므로).
+function readAppVersion() {
+  if (!fs.existsSync(APK_VERSION_PATH)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(APK_VERSION_PATH));
+  } catch (err) {
+    console.error('[HTTP] app-version.json 파싱 실패:', err.message);
+    return null;
+  }
+}
+
+// deviceId -> 폰이 wall/ota/status/{deviceId}로 보고한 최신 OTA 진행 상태
+// { versionCode, phase: 'downloading'|'installing'|'done'|'failed', reason?, reportedAt }
+const deviceOtaState = {};
+
+function handleOtaStatus(deviceId, payload) {
+  let msg;
+  try {
+    msg = JSON.parse(payload.toString());
+  } catch (err) {
+    console.error(`[MQTT] wall/ota/status/${deviceId} 파싱 실패:`, err.message);
+    return;
+  }
+
+  deviceOtaState[deviceId] = {
+    versionCode: msg.versionCode,
+    phase: msg.phase,
+    reason: msg.reason,
+    reportedAt: Date.now(),
+  };
+  console.log(
+    `[MQTT] wall/ota/status/${deviceId} 수신 - phase=${msg.phase} versionCode=${msg.versionCode}`
+    + (msg.reason ? ` reason=${msg.reason}` : ''),
+  );
+}
+
 // ── UDP 멀티캐스트 소켓 초기화 ───────────────────────
 const udpSocket = dgram.createSocket('udp4');
 
@@ -282,6 +331,11 @@ mqttClient.on('connect', () => {
     if (err) console.error('[MQTT] wall/error 구독 오류:', err.message);
     else console.log(`[MQTT] ${MQTT_ERROR_TOPIC_FILTER} 구독 완료`);
   });
+
+  mqttClient.subscribe(MQTT_OTA_STATUS_TOPIC_FILTER, (err) => {
+    if (err) console.error('[MQTT] wall/ota/status 구독 오류:', err.message);
+    else console.log(`[MQTT] ${MQTT_OTA_STATUS_TOPIC_FILTER} 구독 완료`);
+  });
 });
 
 mqttClient.on('reconnect', () => {
@@ -310,6 +364,12 @@ mqttClient.on('message', (topic, payload) => {
   const errorMatch = topic.match(/^wall\/error\/(\d+)$/);
   if (errorMatch) {
     handleFileError(errorMatch[1], payload);
+    return;
+  }
+
+  const otaStatusMatch = topic.match(/^wall\/ota\/status\/(\d+)$/);
+  if (otaStatusMatch) {
+    handleOtaStatus(otaStatusMatch[1], payload);
   }
 });
 
@@ -354,12 +414,28 @@ function publishColorState() {
   });
 }
 
+// wall/ota에 새 버전 정보를 retain으로 발행한다. wall/state/color와 같은 이유로 retain -
+// 재접속/재부팅한 폰도 "지금 최신 버전이 뭔지"는 즉시 알아야 한다.
+// 주의: MQTT 인증이 없는 상태라, 이 토픽에 발행 가능한 사람은 누구나 url+sha256을
+// 자기 것끼리 짝지어 임의 APK를 설치시킬 수 있다. 진짜 보안이 필요해지면 브로커 인증부터.
+function publishOtaUpdate(message) {
+  mqttClient.publish(MQTT_OTA_TOPIC, JSON.stringify(message), { retain: true, qos: 1 }, (err) => {
+    if (err) {
+      console.error(`[MQTT] ${MQTT_OTA_TOPIC} 발행 오류:`, err.message);
+    } else {
+      console.log(`[MQTT] ${MQTT_OTA_TOPIC} 발행 - versionCode=${message.versionCode} stepDelayMs=${message.stepDelayMs}`);
+    }
+  });
+}
+
 // ── REST API + 대시보드 정적 파일 ─────────────────────
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 // 폰이 다운로드하는 영상 파일 - gen_manifest.py/gen_configs.py가 채워 넣는 distribute/videos/
 app.use('/clips', express.static(VIDEOS_DIR));
+// 폰이 다운로드하는 APK - scripts/publish-apk.js가 채워 넣는 apk/
+app.use('/apk', express.static(APK_DIR));
 
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
 app.post('/api/play', (req, res) => {
@@ -590,6 +666,58 @@ app.post('/api/distribute/publish', (req, res) => {
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
 });
 
+// 현재 배포된 최신 APK 버전 정보 - 폰은 이걸 직접 쓰지 않고 wall/ota(retain)로 받는다.
+// 디버깅/수동 확인, 그리고 외부 도구에서 최신 버전을 조회할 때 쓴다.
+app.get('/api/app-version', (req, res) => {
+  const version = readAppVersion();
+  if (!version) {
+    res.status(404).json({ ok: false, error: `app-version.json이 없습니다: ${APK_VERSION_PATH}` });
+    return;
+  }
+
+  res.json({
+    versionCode: version.versionCode,
+    versionName: version.versionName,
+    url: `${req.protocol}://${req.get('host')}/apk/${version.fileName}`,
+    sha256: version.sha256,
+  });
+});
+
+// scripts/publish-apk.js가 채워둔 최신 버전을 wall/ota로 발행해 전 폰에 업데이트를 트리거한다.
+// stepDelayMs로 롤링 배포 간격을 조절한다 - 폰은 SEQUENCE_START와 동일하게
+// (deviceId-1)*stepDelayMs 만큼 자기 차례를 스스로 계산해서 기다린다.
+app.post('/api/app-deploy', (req, res) => {
+  const version = readAppVersion();
+  if (!version) {
+    res.status(400).json({
+      ok: false,
+      error: `app-version.json이 없습니다: ${APK_VERSION_PATH} - scripts/publish-apk.js를 먼저 실행하세요.`,
+    });
+    return;
+  }
+
+  const { stepDelayMs } = req.body || {};
+  const finalStepDelayMs = stepDelayMs !== undefined ? Number(stepDelayMs) : DEFAULT_OTA_STEP_DELAY_MS;
+  if (!Number.isFinite(finalStepDelayMs) || finalStepDelayMs < 0) {
+    res.status(400).json({ ok: false, error: 'stepDelayMs는 0 이상 숫자여야 합니다.' });
+    return;
+  }
+
+  const message = {
+    type: 'UPDATE_APK',
+    versionCode: version.versionCode,
+    versionName: version.versionName,
+    url: `${req.protocol}://${req.get('host')}/apk/${version.fileName}`,
+    sha256: version.sha256,
+    startAt: Date.now() + DEFAULT_OTA_LEAD_TIME_MS,
+    stepDelayMs: finalStepDelayMs,
+  };
+  publishOtaUpdate(message);
+
+  console.log(`[HTTP] OTA 배포 발행 - versionCode=${version.versionCode} stepDelayMs=${finalStepDelayMs}`);
+  res.json({ ok: true, ...message });
+});
+
 // 현재 상태 조회
 app.get('/api/state', (req, res) => {
   const elapsedMs = state.isPlaying ? Math.max(0, Date.now() - state.startAt) : state.stoppedElapsedMs;
@@ -620,9 +748,17 @@ wss.on('connection', (ws) => {
   });
 });
 
+// deviceOtaState에 보고가 없으면 'idle' - 오프라인과는 다른 의미다(이번 롤아웃 대상이
+// 아니었거나 아직 자기 차례가 안 왔을 뿐, 응답이 없다는 뜻이 아니다).
+function computeOtaStatus(deviceId) {
+  const reported = deviceOtaState[deviceId];
+  return reported ? reported.phase : 'idle';
+}
+
 function buildStatusPayload() {
   const devices = {};
   const fileStatus = {};
+  const otaStatus = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
@@ -630,6 +766,7 @@ function buildStatusPayload() {
     devices[id] = status;
     if (status === 'online') online += 1;
     fileStatus[id] = computeFileStatus(id);
+    otaStatus[id] = computeOtaStatus(id);
   }
 
   const payload = {
@@ -638,6 +775,7 @@ function buildStatusPayload() {
     total: TOTAL_DEVICES,
     devices,
     fileStatus,
+    otaStatus,
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     patternConfig: state.patternConfig,
