@@ -40,6 +40,7 @@ private const val OTA_TOPIC = "wall/ota"
 private const val OTA_QOS = 1
 private const val OTA_STATUS_TOPIC_PREFIX = "wall/ota/status/"
 private const val OTA_STATUS_QOS = 1
+private const val DEFAULT_SHOW_ID_DURATION_MS = 5000L
 private const val HEARTBEAT_INTERVAL_MS = 5000L
 
 // wall/control로 수신하는 제어 명령
@@ -70,6 +71,10 @@ sealed class MqttControlMessage {
         val totalDevices: Int,
     ) : MqttControlMessage()
     object SequenceStop : MqttControlMessage()
+
+    // 전체 폰 대상 deviceId 큰 숫자 표시 - 영상/패턴 모드와 무관하게 잠깐 오버레이로 덮는다
+    // (물리 설치 시 "이 폰이 몇 번인지" 확인용). 특정 폰이 아니라 전체에 방송한다.
+    data class ShowId(val durationMs: Long) : MqttControlMessage()
 
     // 키오스크 스트레스 컬러 오버레이 - wall/control로 오는 실시간 명령 (startAt까지 대기 후 적용)
     data class ColorChange(val color: String, val startAt: Long, val duration: Long) : MqttControlMessage()
@@ -290,6 +295,9 @@ class MqttManager(
                     totalDevices = json.getInt("totalDevices"),
                 )
                 "SEQUENCE_STOP" -> MqttControlMessage.SequenceStop
+                "SHOW_ID" -> MqttControlMessage.ShowId(
+                    durationMs = json.optLong("duration", DEFAULT_SHOW_ID_DURATION_MS),
+                )
                 "COLOR_CHANGE" -> MqttControlMessage.ColorChange(
                     color = json.getString("color"),
                     startAt = json.getLong("startAt"),

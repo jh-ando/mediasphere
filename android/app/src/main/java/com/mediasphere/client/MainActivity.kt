@@ -17,6 +17,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -60,6 +61,7 @@ private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 
 private const val SERVER_PORT = 3000
 private const val DOWNLOAD_TIMEOUT_MS = 15000
 private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
+private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN }
@@ -70,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var patternView: View
     private lateinit var colorOverlayView: View
+    private lateinit var idView: TextView
     private lateinit var timecodeReceiver: TimecodeReceiver
     private lateinit var mqttManager: MqttManager
     private lateinit var updateManager: UpdateManager
@@ -81,6 +84,9 @@ class MainActivity : ComponentActivity() {
 
     // COLOR_CHANGE/COLOR_CLEAR의 startAt까지 대기하는 코루틴 - 새 명령이 오면 이전 대기를 취소한다
     private var pendingColorJob: Job? = null
+
+    // ID 오버레이를 durationMs 뒤에 숨기는 코루틴 - 새 SHOW_ID가 오면 이전 타이머를 취소하고 다시 잰다
+    private var idHideJob: Job? = null
 
     // 실제로 play()가 호출되었는지 여부 - true가 되기 전까지는 드리프트 보정을 하지 않는다
     private var playbackStarted = false
@@ -169,6 +175,7 @@ class MainActivity : ComponentActivity() {
         playerView = findViewById(R.id.playerView)
         patternView = findViewById(R.id.patternView)
         colorOverlayView = findViewById(R.id.colorOverlayView)
+        idView = findViewById(R.id.idView)
         PatternAnimator.attach(patternView)
         colorOverlayAlpha = readColorOverlayAlpha()
 
@@ -236,6 +243,10 @@ class MainActivity : ComponentActivity() {
         }
         updateManager = UpdateManager(this, mqttManager)
         mqttManager.connect()
+
+        // 앱을 켜자마자 몇 초간 deviceId를 보여준다 - MQTT/Wi-Fi 연결 전에도 동작해서
+        // config.json을 방금 심은 폰을 물리적으로 바로 식별할 수 있다.
+        showIdOverlay(AUTO_ID_DISPLAY_MS)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -350,6 +361,7 @@ class MainActivity : ComponentActivity() {
             MqttControlMessage.PatternStop -> handlePatternStop()
             is MqttControlMessage.SequenceStart -> handleSequenceStart(message)
             MqttControlMessage.SequenceStop -> handleSequenceStop()
+            is MqttControlMessage.ShowId -> showIdOverlay(message.durationMs)
             is MqttControlMessage.ColorChange -> handleColorChange(message)
             is MqttControlMessage.ColorClear -> handleColorClear(message)
             is MqttControlMessage.ColorState -> handleColorState(message)
@@ -562,6 +574,19 @@ class MainActivity : ComponentActivity() {
         colorAnimator?.cancel()
         colorOverlayView.alpha = 0f
         colorOverlayView.visibility = View.GONE
+    }
+
+    // deviceId를 durationMs 동안 화면 맨 위에 덮어 보여준다. 영상/패턴 모드나 재생 상태를
+    // 전혀 건드리지 않는 순수 오버레이라, 시간이 지나면 원래 화면이 그대로 이어서 보인다.
+    // MQTT(SHOW_ID)와 앱 실행 직후 자동 호출 양쪽에서 공유한다 - 새로 호출되면 이전 타이머는 취소.
+    private fun showIdOverlay(durationMs: Long) {
+        idHideJob?.cancel()
+        idView.text = mqttManager.deviceId().toString()
+        idView.visibility = View.VISIBLE
+        idHideJob = lifecycleScope.launch {
+            delay(durationMs)
+            idView.visibility = View.GONE
+        }
     }
 
     // startAt이 미래 시각이면 그 시각까지 대기하고, 그렇지 않더라도 최소 START_DELAY_MS만큼은

@@ -36,6 +36,7 @@ const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
 const DEFAULT_OTA_LEAD_TIME_MS = 3000; // 다운로드+설치 파이프라인 전체를 트리거하므로 컬러 전환보다 여유를 더 둠
+const DEFAULT_SHOW_ID_DURATION_MS = 5000; // Android MqttManager의 기본값과 맞춤
 
 // ── 파일 배포(manifest/config/영상) 경로 ──────────────────
 // pipeline/slicer의 gen_manifest.py, gen_configs.py가 이 구조로 결과물을 채워 넣는 것을 전제로 한다:
@@ -545,6 +546,22 @@ app.post('/api/sequence/stop', (req, res) => {
 
   console.log('[HTTP] 순차 점멸 정지');
   res.json({ success: true });
+});
+
+// 전체 폰에 deviceId 큰 숫자 표시 - 특정 폰이 아니라 방송이라 별도 대상 지정은 없다.
+// 물리 설치/점검 시 "이 화면이 몇 번 폰인지" 확인하는 용도.
+app.post('/api/show-id', (req, res) => {
+  const { duration } = req.body || {};
+  const finalDuration = duration !== undefined ? Number(duration) : DEFAULT_SHOW_ID_DURATION_MS;
+  if (!Number.isFinite(finalDuration) || finalDuration < 0) {
+    res.status(400).json({ ok: false, error: 'duration은 0 이상 숫자여야 합니다.' });
+    return;
+  }
+
+  publishControl({ type: 'SHOW_ID', duration: finalDuration }, { retain: false });
+
+  console.log(`[HTTP] ID 표시 - duration=${finalDuration}`);
+  res.json({ ok: true, duration: finalDuration });
 });
 
 // 스트레스 컬러 오버레이 전환. stress 또는 color 중 하나는 필수, 둘 다 오면 color 우선.

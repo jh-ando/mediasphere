@@ -29,4 +29,17 @@
         android:background="#000000"
         android:visibility="gone" />
 
+    <!-- deviceId 큰 숫자 표시 - 영상/패턴 모드와 무관하게 맨 위에 잠깐 덮는 오버레이.
+         물리 설치 시 "이 폰이 몇 번인지" 눈으로 바로 확인하는 용도. -->
+    <TextView
+        android:id="@+id/idView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:gravity="center"
+        android:fontFamily="sans-serif-black"
+        android:textColor="#FFFFFF"
+        android:textSize="180sp"
+        android:visibility="gone" />
+
 </FrameLayout>

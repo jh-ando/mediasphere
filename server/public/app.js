@@ -2,6 +2,7 @@ const RECONNECT_DELAY_MS = 3000;
 
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
+const btnShowId = document.getElementById('btn-show-id');
 const playStateEl = document.getElementById('play-state');
 const timecodeEl = document.getElementById('timecode');
 const gridEl = document.getElementById('device-grid');
@@ -233,6 +234,10 @@ btnSequenceStop.addEventListener('click', () => {
 
 btnColorReset.addEventListener('click', () => {
   fetch('/api/color-reset', { method: 'POST' }).catch((err) => console.error('[HTTP] 컬러 초기화 요청 실패', err));
+});
+
+btnShowId.addEventListener('click', () => {
+  fetch('/api/show-id', { method: 'POST' }).catch((err) => console.error('[HTTP] ID 표시 요청 실패', err));
 });
 
 connect();
