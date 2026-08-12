@@ -38,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -95,6 +96,10 @@ class MainActivity : ComponentActivity() {
 
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
+
+    // 지금 ExoPlayer에 실제로 로드돼 있는 파일 - 동기화 결과가 이미 적용된 파일과 같으면
+    // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
+    private lateinit var currentVideoFile: File
 
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
@@ -184,8 +189,9 @@ class MainActivity : ComponentActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
+        currentVideoFile = File(readInitialVideoPath())
         player = ExoPlayer.Builder(this).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(File(readInitialVideoPath()))))
+            setMediaItem(MediaItem.fromUri(Uri.fromFile(currentVideoFile)))
             repeatMode = Player.REPEAT_MODE_ONE
             prepare() // prepare()만 호출 - play()는 서버 PLAY 명령이 올 때까지 호출하지 않는다
         }
@@ -629,12 +635,44 @@ class MainActivity : ComponentActivity() {
             }
 
             if (checksum != null) {
+                persistLocalConfig(videoPath, currentVideo)
                 mqttManager.publishReady("$currentVideo.mp4", "sha256:$checksum")
                 Log.d(SYNC_TAG, "동기화 완료 - $currentVideo (checksum=$checksum)")
+                withContext(Dispatchers.Main) { applyVideoFile(dest) }
             } else {
                 mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드/검증 실패")
             }
         }
+    }
+
+    // 로컬 /sdcard/mediasphere/config.json의 videoPath/currentVideo를 갱신한다 (다른 필드는 유지).
+    // 이걸 안 하면 재부팅 시 readInitialVideoPath()가 여전히 예전 값을 읽어 검은 화면이 재발한다.
+    private fun persistLocalConfig(videoPath: String, currentVideo: String) {
+        try {
+            val file = File(CONFIG_PATH)
+            val json = JSONObject(file.readText())
+            json.put("videoPath", videoPath)
+            json.put("currentVideo", currentVideo)
+            file.writeText(json.toString())
+        } catch (e: Exception) {
+            Log.e(SYNC_TAG, "로컬 config.json 갱신 실패", e)
+        }
+    }
+
+    // 새로 동기화된 파일이 지금 로드된 것과 다르면 ExoPlayer의 소스를 교체한다.
+    // 재생 중(playbackStarted)에는 439대 동기화를 깨뜨리지 않기 위해 교체를 보류한다 -
+    // 다음 syncVideoFile 호출(재접속/CHECK_UPDATE) 때 다시 시도된다. 반드시 메인 스레드에서 호출.
+    private fun applyVideoFile(dest: File) {
+        if (dest.path == currentVideoFile.path) return
+        if (playbackStarted) {
+            Log.d(SYNC_TAG, "재생 중이라 미디어 교체 보류 - ${dest.path}")
+            return
+        }
+
+        currentVideoFile = dest
+        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(dest)))
+        player.prepare()
+        Log.d(SYNC_TAG, "재생 파일 교체 완료 - ${dest.path}")
     }
 
     // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤
