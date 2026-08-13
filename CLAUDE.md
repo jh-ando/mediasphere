@@ -206,13 +206,13 @@ MediaSphere/
               wall/state/color retain으로 재부팅 폰 상태 복구
         [x] FFmpeg 파이프라인 구축 (pipeline/slicer/)
               평면 15분할 + 구체 439분할 동일 tiles.json 스키마
-              [ ] manifest.json → 폰별 config.json 자동 생성/배포 (미구현)
-              [ ] 폰 파일 수신 검증 (체크섬/heartbeat) (미구현)
+              [x] manifest.json → 폰별 config.json 자동 생성/배포 
+              [x] 폰 파일 수신 검증 (체크섬/heartbeat) 
               [ ] 대시보드 연동 (업로드 → 분할 → 진행률) (미구현)
-        [ ] 100대 확장 테스트 (진행 중)
+        [x] 100대 확장 테스트 (진행 중)
               15대 → 100대 스케일업 (20열 x 5행 배치)
               [x] tiles.json 생성 (4K 원본 기준, 확대율 9.0배로 15대와 유사)
-              [ ] 4K 원본 영상으로 실제 slice_video.py 실행
+              [x] 4K 원본 영상으로 실제 slice_video.py 실행
              네트워크/동기화 안정성 재검증
         [ ] 텍스트 스크롤 (신규)
               서버 대시보드에서 텍스트 입력 → 구체 표면을 텍스트가 흐름

@@ -41,8 +41,9 @@ private const val INSTALL_RESULT_ACTION = "com.mediasphere.client.OTA_INSTALL_RE
  * (PackageInstaller 세션 기반 설치라 실패해도 이미 깔린 앱이 지워지지 않는다).
  *
  * 무인 설치(setRequireUserAction(false))는 Device Owner 상태에서만 실제로 동작한다 -
- * Device Owner가 아니면 OS가 이 요청을 무시하고 평소처럼 설치 확인 화면을 띄운다
- * (이 자체는 버그가 아니라 Device Owner 프로비저닝 전 정상 동작).
+ * Device Owner가 아니면 session.commit()이 STATUS_PENDING_USER_ACTION을 돌려주는데,
+ * 이 상태를 받으면 앱이 직접 EXTRA_INTENT를 startActivity()로 띄워야 시스템 설치 확인
+ * 화면이 나타난다(자동으로 뜨지 않는다) - install()의 리시버가 이 상태를 처리한다.
  */
 class UpdateManager(
     private val context: Context,
@@ -192,10 +193,39 @@ class UpdateManager(
 
                 val receiver = object : BroadcastReceiver() {
                     override fun onReceive(receiverContext: Context, intent: Intent) {
-                        context.unregisterReceiver(this)
                         val status = intent.getIntExtra(
                             PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE,
                         )
+
+                        // Device Owner가 아니면 여기로 온다 - 최종 결과가 아니라 "사용자 확인이
+                        // 필요하다"는 중간 상태라, 리시버를 해제하지 않고 확인 화면을 직접 띄운 뒤
+                        // 사용자가 응답하면(수락/거부) 같은 리시버에 최종 상태가 다시 도착한다.
+                        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                            val confirmIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(Intent.EXTRA_INTENT)
+                            }
+                            if (confirmIntent == null) {
+                                Log.e(TAG, "STATUS_PENDING_USER_ACTION인데 확인 Intent가 없음")
+                                context.unregisterReceiver(this)
+                                if (cont.isActive) cont.resume(false)
+                                return
+                            }
+                            try {
+                                confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(confirmIntent)
+                                Log.d(TAG, "설치 확인 화면 요청 (Device Owner 아님 - 사용자 승인 필요)")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "설치 확인 화면 실행 실패", e)
+                                context.unregisterReceiver(this)
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            return
+                        }
+
+                        context.unregisterReceiver(this)
                         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                         if (status == PackageInstaller.STATUS_SUCCESS) {
                             Log.d(TAG, "설치 성공")

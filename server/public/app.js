@@ -2,6 +2,7 @@ const RECONNECT_DELAY_MS = 3000;
 
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
+const otaStatusCountEl = document.getElementById('ota-status-count');
 const btnShowId = document.getElementById('btn-show-id');
 const playStateEl = document.getElementById('play-state');
 const timecodeEl = document.getElementById('timecode');
@@ -87,6 +88,8 @@ function applyStatusUpdate(data) {
   const offlineIds = [];
   const fileStatus = data.fileStatus || {};
   const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
+  const otaStatus = data.otaStatus || {};
+  const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
 
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
@@ -106,12 +109,19 @@ function applyStatusUpdate(data) {
     const cell = cellRefs[id];
     if (cell) cell.classList.toggle('mismatch', fStatus === 'mismatch');
 
+    const oStatus = otaStatus[id] || 'idle';
+    otaCounts[oStatus] = (otaCounts[oStatus] || 0) + 1;
+
     if (status === 'offline') offlineIds.push(id);
   }
   lastDevices = data.devices;
 
   fileStatusCountEl.textContent =
     `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
+
+  otaStatusCountEl.textContent =
+    `OTA: 대기 ${otaCounts.idle} / 다운 ${otaCounts.downloading} / 설치 ${otaCounts.installing} `
+    + `/ 완료 ${otaCounts.done} / 실패 ${otaCounts.failed}`;
 
   offlineListEl.textContent = offlineIds.length > 0 ? offlineIds.join(', ') : '없음';
 
