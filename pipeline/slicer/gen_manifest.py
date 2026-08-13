@@ -116,6 +116,7 @@ def main():
         "generatedAt": datetime.datetime.now(datetime.timezone.utc)
             .strftime("%Y-%m-%dT%H:%M:%SZ"),
         "layout": src_manifest["layout"],
+        "gap": src_manifest.get("gap", {"x": 0.0, "y": 0.0}),  # 텍스트 스크롤 간격 보정용 - gen_configs.py가 각 config.json에 그대로 복사
         "apCount": a.ap_count,
         "devices": devices,
     }

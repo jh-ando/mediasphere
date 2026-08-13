@@ -244,11 +244,20 @@ def main():
         tiles = gen_sphere(src_w, src_h, a.radius, rows_spec, a.stagger, a.margin)
         projection = "equirect"
 
+    # gap: 폰 화면 대비 실제 물리 간격(피치) 비율. 텍스트 스크롤이 폰 사이 여백까지
+    # 감안해서 흐르게 하는 데 쓴다(가로/세로 각 0.0=간격 없음 ~ 값이 클수록 넓은 간격).
+    # flat은 --pitch로 실측해서 산출하지만, sphere는 위도별로 폰 개수/간격이 달라
+    # "피치 하나"로 못 잡는다 - 위도별 gap_lon = 1 - d_lon/(360/count), gap_lat = 1 -
+    # d_lat/(행간 위도차) 식으로 행마다 따로 계산해야 하는데, 이번 라운드는 평면(flat)
+    # 텍스트 스크롤 간격 보정까지만 구현하고 sphere는 0으로 남겨둔다(추후 과제).
+    gap = {"x": a.gap_x, "y": a.gap_y} if a.layout == "flat" else {"x": 0.0, "y": 0.0}
+
     doc = {
         "version": 1,
         "layout": a.layout,
         "source": {"width": src_w, "height": src_h, "projection": projection},
         "output": {"width": out_w, "height": out_h, "fps": a.fps},
+        "gap": gap,
         "tiles": tiles,
     }
     with open(a.out, "w", encoding="utf-8") as fp:

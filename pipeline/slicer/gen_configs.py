@@ -14,6 +14,12 @@ row/col은 device["meta"]에서 그대로 가져온다(gen_tiles.py의 flat 레�
 하는지" 계산하는 데 쓴다 - sphere처럼 meta에 row/col이 없는 레이아웃이면
 그냥 생략된다.
 
+gapRatioX/gapRatioY는 manifest["gap"](gen_tiles.py가 --pitch 실측값으로 계산,
+모든 폰 공통값)을 그대로 복사한다. 텍스트 스크롤이 폰 화면 폭/높이만으로
+캔버스를 이어붙이면 실제 폰 사이 물리적 간격(베젤+거치대)이 반영 안 돼서
+글자가 압축돼 보인다 - 이 비율만큼 폰 간 간격을 더 벌려서 계산하는 데 쓴다.
+0이면 간격 없음(구체 등 아직 미지원 레이아웃 포함).
+
 checksum은 폰이 로컬에 이미 있는 동일 파일명(예: P001.mp4)을 무조건 "맞다"고
 믿지 않고, 기대 체크섬과 비교해서 다르면 재다운로드하게 하는 데 쓰인다 -
 서버만 새로 배포하고 폰의 기존 파일은 그대로 남아있는 상황(체크섬은 바뀌었는데
@@ -53,6 +59,8 @@ def main():
 
     os.makedirs(a.outdir, exist_ok=True)
 
+    gap = manifest.get("gap", {"x": 0.0, "y": 0.0})
+
     count = 0
     for device in manifest["devices"]:
         device_id = device["deviceId"]
@@ -78,6 +86,9 @@ def main():
             config["row"] = meta["row"]
         if "col" in meta:
             config["col"] = meta["col"]
+        if gap.get("x") or gap.get("y"):
+            config["gapRatioX"] = gap.get("x", 0.0)
+            config["gapRatioY"] = gap.get("y", 0.0)
         if "colorOverlayAlpha" in base:
             config["colorOverlayAlpha"] = base["colorOverlayAlpha"]
 

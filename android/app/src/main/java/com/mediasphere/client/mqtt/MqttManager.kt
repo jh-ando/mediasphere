@@ -113,12 +113,16 @@ sealed class MqttControlMessage {
     // (없으면 null - 옛 manifest이거나 gen_manifest.py --skip-checksum인 경우).
     // row/col: 텍스트 스크롤에서 "나는 전체 배너 중 어디를 보여줘야 하는지" 계산하는 데 쓴다
     // (없으면 null - sphere 등 row/col 개념이 없는 레이아웃이거나 옛 config인 경우).
+    // gapRatioX/gapRatioY: 폰 화면 크기 대비 실제 물리 간격(피치) 비율 - 텍스트 스크롤이
+    // 폰 사이 여백까지 감안해서 흐르게 하는 데 쓴다(없거나 0이면 간격 없음으로 취급).
     data class DeviceConfig(
         val videoPath: String,
         val currentVideo: String,
         val checksum: String?,
         val row: Int?,
         val col: Int?,
+        val gapRatioX: Double?,
+        val gapRatioY: Double?,
     ) : MqttControlMessage()
 
     // wall/ota(retain) - 새 APK 배포 신호. stepDelayMs는 SEQUENCE_START와 동일하게
@@ -394,6 +398,8 @@ class MqttManager(
                 checksum = if (json.has("checksum")) json.getString("checksum") else null,
                 row = if (json.has("row")) json.getInt("row") else null,
                 col = if (json.has("col")) json.getInt("col") else null,
+                gapRatioX = if (json.has("gapRatioX")) json.getDouble("gapRatioX") else null,
+                gapRatioY = if (json.has("gapRatioY")) json.getDouble("gapRatioY") else null,
             )
         } catch (e: Exception) {
             Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)

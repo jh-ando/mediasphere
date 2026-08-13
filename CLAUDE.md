@@ -234,11 +234,32 @@ MediaSphere/
 
 ## 신규 기능 설계 노트
 
-### 텍스트 스크롤 구현 방향
-- 서버가 각 폰의 구체 위 위치(위도/경도)를 알고 있음
-- 텍스트가 경도 방향으로 흐를 경우:
-  서버가 경도 순서로 각 폰에 delay를 계산해 개별 MQTT 발행
-- Android: 지정된 startAt에 텍스트 오버레이 표시 후 슬라이드 아웃
+### 텍스트 스크롤 구현 방향 (평면 100대 구현 완료, 2026-08)
+- 서버가 프레임 단위로 픽셀을 만들어 폰에 스트리밍하지 않는다 - 텍스트/폰트/색상/
+  방향/속도 같은 "파라미터"만 MQTT로 한 번 방송하고, 각 폰이 자기 몫을 로컬에서
+  직접 렌더링한다(대역폭 문제로 프레임 스트리밍안은 기각 - docs/frame-protocol-spec.md).
+- 동기화: ValueAnimator 금지. 매 프레임 `TimeSyncManager.now() - startAt`으로 절대
+  위치를 다시 계산한다(DriftCorrector와 동일 원리) - MQTT 전파 지연이 있어도 폰마다
+  어긋나지 않음.
+- 캔버스 모델: 전체 그리드(모든 row x col)를 하나의 큰 캔버스로 보고 텍스트 블록을
+  그 위에 "한 번만" 배치한 뒤, 각 폰이 자기 row/col 오프셋만큼 잘라서 보여준다
+  (android/.../text/TextScrollView.kt). 초기 구현은 "행마다 반복"이었다가(5행이면
+  텍스트가 5줄로 보이는 문제) 위 방식으로 수정함 - 폰트가 크면 여러 행에 걸쳐,
+  작으면 가운데 행 근처에만 표시된다.
+- **폰 간격(gapRatio) 보정**: 폰 화면(width/height)만으로 캔버스를 이어붙이면 실제
+  물리적 간격(베젤+거치대)이 없는 것처럼 압축되어 보인다. gen_tiles.py가 --pitch
+  실측값으로 이미 계산하던 gap_x/gap_y(현재 피치 110x200mm 기준 가로 37%, 세로 25%)를
+  tiles.json → slice_manifest.json → manifest.json → config.json(`gapRatioX`/
+  `gapRatioY`) → wall/device/{id}로 그대로 흘려보내고, TextScrollView가 폰 화면 크기
+  대신 "pitch = 화면크기 / (1-gapRatio)"를 그리드 한 칸으로 써서 계산한다. 0이면
+  기존처럼 간격 없음으로 취급(구체 등 미지원 레이아웃 포함).
+  - 구체(sphere)는 이 방식을 그대로 못 쓴다 - 위도마다 폰 개수/간격이 달라 "피치
+    하나"로 안 잡힘. 대신 위도별로 각각 계산해야 함:
+    `gap_lon = 1 - d_lon/(360/count)`(그 행의 경도 간격 대비 폰 폭 비율),
+    `gap_lat = 1 - d_lat/행간 위도차`(현재 SPHERE_ROWS는 11.25° 균일).
+    d_lat/d_lon/count는 gen_sphere()가 이미 계산하지만 저장은 안 함 - 구체 지원 시
+    gen_tiles.py의 sphere 브랜치에도 flat과 동일하게 tiles.json에 저장하면 됨.
+    이번 라운드는 평면만 구현, 구체는 gap:{x:0,y:0}으로 남겨둠.
 
 ### 텍스트 패턴 구현 방향
 - 구체 표면의 폰 배치를 픽셀 그리드로 취급

@@ -248,6 +248,7 @@ def main():
     man = {
         "layout": doc["layout"],
         "output": doc["output"],
+        "gap": doc.get("gap", {"x": 0.0, "y": 0.0}),  # gen_tiles.py가 계산한 폰 간격 비율 - 그대로 다음 단계로 전달
         "files": [{"id": t["id"], "file": f"{t['id']}.mp4",
                    "width": sizes[t["id"]][0], "height": sizes[t["id"]][1],
                    "meta": t.get("meta", {})} for t in tiles],

@@ -474,8 +474,11 @@ class MainActivity : ComponentActivity() {
             startAt = message.startAt,
             myRow = config?.row ?: 0,
             myCol = config?.col ?: 0,
+            gapRatioX = config?.gapRatioX ?: 0.0,
+            gapRatioY = config?.gapRatioY ?: 0.0,
         )
-        Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col}")
+        Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col} "
+            + "gapRatioX=${config?.gapRatioX} gapRatioY=${config?.gapRatioY}")
     }
 
     private fun handleTextStop() {
