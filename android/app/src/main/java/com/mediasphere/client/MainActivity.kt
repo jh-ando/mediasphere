@@ -109,6 +109,11 @@ class MainActivity : ComponentActivity() {
     // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
     private lateinit var currentVideoFile: File
 
+    // 재생 중이라 applyVideoFile()이 즉시 반영하지 못하고 미뤄둔 파일. STOP/패턴 모드 전환처럼
+    // 재생이 멈추는 시점에 이 값이 있으면 자동으로 다시 적용한다 - 그렇지 않으면 앱을 재시작하기
+    // 전까지 새로 배포한 영상이 영영 반영되지 않는 문제가 있었다.
+    private var pendingVideoFile: File? = null
+
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
     private var pendingStartAt: Long? = null
@@ -337,6 +342,7 @@ class MainActivity : ComponentActivity() {
                 pendingPlayJob?.cancel()
                 playbackStarted = false
                 pendingStartAt = null
+                applyPendingVideoFileIfAny()
 
                 // retain된 STOP을 재접속 후에 받는 경우에도 다른 폰과 같은 프레임을 보여주도록
                 // 정지된 위치(elapsedMs % duration)로 seek한 뒤 정지한다.
@@ -353,6 +359,7 @@ class MainActivity : ComponentActivity() {
                 Log.d(TAG, "LOAD 수신 (video=${message.video}) - 아직 미구현")
             }
             MqttControlMessage.CheckUpdate -> handleCheckUpdate()
+            is MqttControlMessage.RestartApp -> handleRestartApp(message)
             is MqttControlMessage.DeviceConfig -> handleDeviceConfig(message)
             is MqttControlMessage.UpdateApk -> updateManager.handleUpdate(message)
             MqttControlMessage.ModeVideo -> handleModeVideo()
@@ -381,6 +388,7 @@ class MainActivity : ComponentActivity() {
         player.pause()
         playbackStarted = false
         pendingStartAt = null
+        applyPendingVideoFileIfAny()
         currentMode = Mode.VIDEO
 
         // 모드 전환은 뷰 visibility만 바꾸는 것이라 시스템 insets 콜백이 다시 불리지 않는다.
@@ -401,6 +409,7 @@ class MainActivity : ComponentActivity() {
         PatternAnimator.stop()
         playbackStarted = false
         pendingStartAt = null
+        applyPendingVideoFileIfAny()
         currentMode = Mode.PATTERN
         clearColorOverlay()
 
@@ -647,6 +656,20 @@ class MainActivity : ComponentActivity() {
         syncVideoFile(config.videoPath, config.currentVideo, config.checksum)
     }
 
+    // RESTART_APP - targetDeviceIds가 없으면(전체 대상) 무조건, 있으면 내 deviceId가
+    // 포함된 경우에만 Activity를 재시작한다. onDestroy -> onCreate가 다시 돌면서
+    // config.json 재읽기, ExoPlayer/MQTT 재생성이 전부 처음부터 다시 이뤄진다.
+    private fun handleRestartApp(message: MqttControlMessage.RestartApp) {
+        val targets = message.targetDeviceIds
+        val myId = mqttManager.deviceId()
+        if (targets != null && myId !in targets) {
+            Log.d(TAG, "RESTART_APP 수신 - 대상 아님(내 deviceId=$myId)")
+            return
+        }
+        Log.d(TAG, "RESTART_APP 수신 - 재시작 (대상=${targets ?: "전체"})")
+        recreate()
+    }
+
     // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드한다. 파일이 이미
     // 있어도 expectedChecksum이 주어졌는데 로컬 체크섬과 다르면(서버가 같은 파일명으로 다른
     // 영상을 재배포한 경우) 무조건 재다운로드한다 - expectedChecksum이 없으면(옛 manifest 등)
@@ -705,16 +728,28 @@ class MainActivity : ComponentActivity() {
     // 재생 중(playbackStarted)에는 439대 동기화를 깨뜨리지 않기 위해 교체를 보류한다 -
     // 다음 syncVideoFile 호출(재접속/CHECK_UPDATE) 때 다시 시도된다. 반드시 메인 스레드에서 호출.
     private fun applyVideoFile(dest: File) {
-        if (dest.path == currentVideoFile.path) return
+        if (dest.path == currentVideoFile.path) {
+            pendingVideoFile = null
+            return
+        }
         if (playbackStarted) {
-            Log.d(SYNC_TAG, "재생 중이라 미디어 교체 보류 - ${dest.path}")
+            pendingVideoFile = dest
+            Log.d(SYNC_TAG, "재생 중이라 미디어 교체 보류 - ${dest.path} (정지 시 자동 적용)")
             return
         }
 
+        pendingVideoFile = null
         currentVideoFile = dest
         player.setMediaItem(MediaItem.fromUri(Uri.fromFile(dest)))
         player.prepare()
         Log.d(SYNC_TAG, "재생 파일 교체 완료 - ${dest.path}")
+    }
+
+    // STOP, 패턴 모드 전환처럼 재생이 멈추는 시점에 호출한다 - applyVideoFile()이 재생 중이라
+    // 미뤄뒀던 파일이 있으면 이제(재생 중이 아니므로) 적용한다.
+    private fun applyPendingVideoFileIfAny() {
+        val pending = pendingVideoFile ?: return
+        applyVideoFile(pending)
     }
 
     // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤

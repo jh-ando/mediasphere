@@ -193,6 +193,48 @@ body {
   width: 48px;
 }
 
+.admin-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 24px;
+}
+
+.admin-section h2 {
+  font-size: 14px;
+  color: #8b93a1;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 0;
+}
+
+.admin-restart {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#restart-device-ids {
+  background: #12151a;
+  border: 1px solid #2f3542;
+  border-radius: 4px;
+  color: #e6e8eb;
+  padding: 6px 8px;
+  font-size: 13px;
+  width: 220px;
+}
+
+.btn-danger {
+  border-color: #e35d5d;
+  color: #e35d5d;
+}
+
+.btn-danger:hover {
+  background: #e35d5d;
+  color: #2a0b0b;
+}
+
 main {
   padding: 0 24px 32px;
   display: flex;

@@ -52,6 +52,10 @@ sealed class MqttControlMessage {
     data class Load(val video: String) : MqttControlMessage()
     object CheckUpdate : MqttControlMessage()
 
+    // 앱 재시작(Activity recreate) - targetDeviceIds가 없으면 전체 대상, 있으면 그 deviceId만
+    // (SEQUENCE_START와 같은 패턴: 브로드캐스트로 받고 폰이 자기 deviceId로 스스로 필터링).
+    data class RestartApp(val targetDeviceIds: List<Int>?) : MqttControlMessage()
+
     // 영상 모드 / 패턴 모드 전환
     object ModeVideo : MqttControlMessage()
     object ModePattern : MqttControlMessage()
@@ -277,6 +281,14 @@ class MqttManager(
                 "STOP" -> MqttControlMessage.Stop(elapsedMs = json.optLong("elapsedMs", 0L))
                 "LOAD" -> MqttControlMessage.Load(video = json.optString("video"))
                 "CHECK_UPDATE" -> MqttControlMessage.CheckUpdate
+                "RESTART_APP" -> MqttControlMessage.RestartApp(
+                    targetDeviceIds = if (json.has("targetDeviceIds")) {
+                        val arr = json.getJSONArray("targetDeviceIds")
+                        (0 until arr.length()).map { arr.getInt(it) }
+                    } else {
+                        null
+                    },
+                )
                 "MODE_VIDEO" -> MqttControlMessage.ModeVideo
                 "MODE_PATTERN" -> MqttControlMessage.ModePattern
                 "PATTERN_START" -> MqttControlMessage.PatternStart(

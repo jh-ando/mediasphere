@@ -26,6 +26,10 @@ const colorSwatchEl = document.getElementById('color-swatch');
 const colorLabelEl = document.getElementById('color-label');
 const btnColorReset = document.getElementById('btn-color-reset');
 
+const restartDeviceIdsEl = document.getElementById('restart-device-ids');
+const btnRestartSelected = document.getElementById('btn-restart-selected');
+const btnRestartAll = document.getElementById('btn-restart-all');
+
 // 패턴 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
 
@@ -238,6 +242,39 @@ btnColorReset.addEventListener('click', () => {
 
 btnShowId.addEventListener('click', () => {
   fetch('/api/show-id', { method: 'POST' }).catch((err) => console.error('[HTTP] ID 표시 요청 실패', err));
+});
+
+// 쉼표로 구분된 deviceId 문자열("1, 2,3")을 정수 배열로 파싱한다. 잘못된 값이 섞여 있으면 null.
+function parseDeviceIds(text) {
+  const parts = text.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  if (parts.length === 0) return null;
+
+  const ids = parts.map(Number);
+  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) return undefined;
+  return ids;
+}
+
+btnRestartSelected.addEventListener('click', () => {
+  const ids = parseDeviceIds(restartDeviceIdsEl.value);
+  if (ids === undefined) {
+    window.alert('deviceId는 쉼표로 구분된 양의 정수로 입력하세요 (예: 1,2,3)');
+    return;
+  }
+  if (ids === null) {
+    window.alert('재시작할 deviceId를 입력하세요 (전체는 "전체 재시작" 버튼 사용)');
+    return;
+  }
+  if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재시작할까요?`)) return;
+
+  postJson('/api/restart-app', { targetDeviceIds: ids })
+    .catch((err) => console.error('[HTTP] 앱 재시작(선택) 요청 실패', err));
+});
+
+btnRestartAll.addEventListener('click', () => {
+  if (!window.confirm('전체 기기를 재시작할까요?')) return;
+
+  fetch('/api/restart-app', { method: 'POST' })
+    .catch((err) => console.error('[HTTP] 앱 재시작(전체) 요청 실패', err));
 });
 
 connect();

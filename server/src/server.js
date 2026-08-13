@@ -564,6 +564,25 @@ app.post('/api/show-id', (req, res) => {
   res.json({ ok: true, duration: finalDuration });
 });
 
+// 앱 재시작(Activity recreate). targetDeviceIds를 안 주면 전체, 주면 그 deviceId들만 -
+// SEQUENCE_START와 같은 패턴으로 브로드캐스트하고 폰이 자기 deviceId로 스스로 걸러낸다.
+// 앱이 멈추거나 이상 동작할 때, 또는 wall/device 갱신이 재생 중이라 반영을 못 하고
+// 미뤄진 채로 남아있을 때(정지 전까지 계속 보류됨) 강제로 풀어주는 용도로도 쓸 수 있다.
+app.post('/api/restart-app', (req, res) => {
+  const { targetDeviceIds } = req.body || {};
+  if (targetDeviceIds !== undefined && !Array.isArray(targetDeviceIds)) {
+    res.status(400).json({ ok: false, error: 'targetDeviceIds는 배열이어야 합니다.' });
+    return;
+  }
+
+  const payload = { type: 'RESTART_APP' };
+  if (targetDeviceIds !== undefined) payload.targetDeviceIds = targetDeviceIds;
+  publishControl(payload, { retain: false });
+
+  console.log(`[HTTP] 앱 재시작 요청 - ${targetDeviceIds ? `대상 ${targetDeviceIds.length}대(${targetDeviceIds.join(',')})` : '전체'}`);
+  res.json({ ok: true, targetDeviceIds: targetDeviceIds || null });
+});
+
 // 스트레스 컬러 오버레이 전환. stress 또는 color 중 하나는 필수, 둘 다 오면 color 우선.
 // startAt = 지금 + leadTime(기본 2000ms)으로 잡아 네트워크/MQTT 전파 지연을 흡수한다.
 app.post('/api/color-change', (req, res) => {
