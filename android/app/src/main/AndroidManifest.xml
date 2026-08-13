@@ -50,6 +50,21 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- adb shell dpm set-device-owner com.mediasphere.client/.DeviceAdminReceiver 로
+             이 앱을 Device Owner로 등록하기 위한 필수 구성요소. exported=true + BIND_DEVICE_ADMIN
+             권한은 시스템만 이 리시버를 호출할 수 있게 하는 표준 조합(공식 문서 권장 방식). -->
+        <receiver
+            android:name=".DeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

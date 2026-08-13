@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device Owner 등록(dpm set-device-owner)을 위한 최소 정책 선언.
+  OTA 무인 설치(PackageInstaller.setRequireUserAction(false))는 Device Owner라는
+  "상태" 자체에서 나오는 권한이라, force-lock/wipe-data 같은 별도 정책은 필요 없어서
+  uses-policies를 비워둔다.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>
