@@ -29,6 +29,13 @@
         android:background="#000000"
         android:visibility="gone" />
 
+    <!-- 텍스트 스크롤 모드: TextScrollView가 매 프레임 직접 그린다 -->
+    <com.mediasphere.client.text.TextScrollView
+        android:id="@+id/textScrollView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
     <!-- deviceId 큰 숫자 표시 - 영상/패턴 모드와 무관하게 맨 위에 잠깐 덮는 오버레이.
          물리 설치 시 "이 폰이 몇 번인지" 눈으로 바로 확인하는 용도. -->
     <TextView

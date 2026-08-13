@@ -35,6 +35,7 @@ import com.mediasphere.client.network.TimecodeReceiver
 import com.mediasphere.client.pattern.PatternAnimator
 import com.mediasphere.client.sync.DriftCorrector
 import com.mediasphere.client.sync.TimeSyncManager
+import com.mediasphere.client.text.TextScrollView
 import com.mediasphere.client.update.UpdateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -64,7 +65,7 @@ private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
-enum class Mode { VIDEO, PATTERN }
+enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
 
 class MainActivity : ComponentActivity() {
 
@@ -73,6 +74,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var patternView: View
     private lateinit var colorOverlayView: View
     private lateinit var idView: TextView
+    private lateinit var textScrollView: TextScrollView
     private lateinit var timecodeReceiver: TimecodeReceiver
     private lateinit var mqttManager: MqttManager
     private lateinit var updateManager: UpdateManager
@@ -181,6 +183,7 @@ class MainActivity : ComponentActivity() {
         patternView = findViewById(R.id.patternView)
         colorOverlayView = findViewById(R.id.colorOverlayView)
         idView = findViewById(R.id.idView)
+        textScrollView = findViewById(R.id.textScrollView)
         PatternAnimator.attach(patternView)
         colorOverlayAlpha = readColorOverlayAlpha()
 
@@ -364,6 +367,9 @@ class MainActivity : ComponentActivity() {
             is MqttControlMessage.UpdateApk -> updateManager.handleUpdate(message)
             MqttControlMessage.ModeVideo -> handleModeVideo()
             MqttControlMessage.ModePattern -> handleModePattern()
+            MqttControlMessage.ModeText -> handleModeText()
+            is MqttControlMessage.TextScroll -> handleTextScroll(message)
+            MqttControlMessage.TextStop -> handleTextStop()
             is MqttControlMessage.PatternStart -> handlePatternStart(message)
             MqttControlMessage.PatternStop -> handlePatternStop()
             is MqttControlMessage.SequenceStart -> handleSequenceStart(message)
@@ -383,6 +389,8 @@ class MainActivity : ComponentActivity() {
         PatternAnimator.stop()
         patternView.visibility = View.GONE
         patternView.alpha = 0f
+        textScrollView.stop()
+        textScrollView.visibility = View.GONE
         playerView.visibility = View.VISIBLE
         player.seekTo(0)
         player.pause()
@@ -406,6 +414,8 @@ class MainActivity : ComponentActivity() {
         patternView.alpha = 0f
         patternView.setBackgroundColor(Color.BLACK)
         patternView.visibility = View.VISIBLE
+        textScrollView.stop()
+        textScrollView.visibility = View.GONE
         PatternAnimator.stop()
         playbackStarted = false
         pendingStartAt = null
@@ -418,6 +428,59 @@ class MainActivity : ComponentActivity() {
         hideSystemBars()
 
         Log.d(PATTERN_TAG, "모드 전환: PATTERN")
+    }
+
+    // 텍스트 스크롤 모드로 전환 - 영상/패턴 리소스를 정리하고 textScrollView를 보여준다.
+    // 실제 텍스트 내용은 이후 TEXT_SCROLL 명령으로 채워진다(PATTERN_START가 그러듯).
+    private fun handleModeText() {
+        player.seekTo(0)
+        player.pause()
+        playerView.visibility = View.GONE
+        pendingPatternJob?.cancel()
+        PatternAnimator.stop()
+        patternView.visibility = View.GONE
+        patternView.alpha = 0f
+        playbackStarted = false
+        pendingStartAt = null
+        applyPendingVideoFileIfAny()
+        currentMode = Mode.TEXT_SCROLL
+        clearColorOverlay()
+        textScrollView.visibility = View.VISIBLE
+
+        hideSystemBars()
+
+        Log.d(TAG, "모드 전환: TEXT_SCROLL")
+    }
+
+    // 현재 텍스트 모드일 때만 처리한다 (PATTERN_START가 패턴 모드를 확인하는 것과 동일한 이유).
+    private fun handleTextScroll(message: MqttControlMessage.TextScroll) {
+        if (currentMode != Mode.TEXT_SCROLL) {
+            Log.d(TAG, "TEXT 모드가 아니어서 TEXT_SCROLL 무시")
+            return
+        }
+
+        val config = lastDeviceConfig
+        textScrollView.start(
+            text = message.text,
+            fontFamily = message.font,
+            fontSize = message.fontSize,
+            textColor = message.color,
+            bgColor = message.bgColor,
+            align = message.align,
+            direction = message.direction,
+            speedPxPerSec = message.speedPxPerSec,
+            rowCounts = message.rowCounts,
+            totalRows = message.totalRows,
+            startAt = message.startAt,
+            myRow = config?.row ?: 0,
+            myCol = config?.col ?: 0,
+        )
+        Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col}")
+    }
+
+    private fun handleTextStop() {
+        textScrollView.stop()
+        Log.d(TAG, "텍스트 스크롤 정지")
     }
 
     // 현재 패턴 모드일 때만 처리한다. startAt까지 대기한 뒤에도 여전히 패턴 모드인지 다시 확인한다

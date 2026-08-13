@@ -27,6 +27,7 @@
     <div class="mode-toggle">
       <button id="mode-video" class="mode-btn active">영상 모드</button>
       <button id="mode-pattern" class="mode-btn">패턴 모드</button>
+      <button id="mode-text" class="mode-btn">텍스트 모드</button>
     </div>
 
     <div id="video-controls" class="control-group">
@@ -55,6 +56,62 @@
       <button id="btn-pattern-stop" class="btn btn-stop" disabled>Pattern STOP</button>
       <button id="btn-sequence-play" class="btn btn-play" disabled>순차 점멸 시작</button>
       <button id="btn-sequence-stop" class="btn btn-stop" disabled>순차 점멸 정지</button>
+    </div>
+
+    <div id="text-controls" class="control-group pattern-controls disabled">
+      <label class="pattern-field text-field-wide">
+        텍스트 (줄바꿈 가능)
+        <textarea id="text-content" rows="3" disabled>MediaSphere</textarea>
+      </label>
+      <label class="pattern-field">
+        서체
+        <select id="text-font" disabled>
+          <option value="sans-serif">sans-serif</option>
+          <option value="sans-serif-black">sans-serif-black</option>
+          <option value="sans-serif-condensed">sans-serif-condensed</option>
+          <option value="sans-serif-light">sans-serif-light</option>
+          <option value="sans-serif-medium">sans-serif-medium</option>
+          <option value="serif">serif</option>
+          <option value="monospace">monospace</option>
+          <option value="casual">casual</option>
+          <option value="cursive">cursive</option>
+        </select>
+      </label>
+      <label class="pattern-field">
+        글자 크기(px)
+        <input type="number" id="text-font-size" min="10" step="10" value="120" disabled />
+      </label>
+      <label class="pattern-field">
+        글자색
+        <input type="color" id="text-color" value="#ffffff" disabled />
+      </label>
+      <label class="pattern-field">
+        배경색
+        <input type="color" id="text-bg-color" value="#000000" disabled />
+      </label>
+      <label class="pattern-field">
+        정렬
+        <select id="text-align" disabled>
+          <option value="left">왼쪽</option>
+          <option value="center" selected>가운데</option>
+          <option value="right">오른쪽</option>
+        </select>
+      </label>
+      <label class="pattern-field">
+        방향
+        <select id="text-direction" disabled>
+          <option value="left" selected>왼쪽으로</option>
+          <option value="right">오른쪽으로</option>
+          <option value="up">위로</option>
+          <option value="down">아래로</option>
+        </select>
+      </label>
+      <label class="pattern-field">
+        속도(px/초)
+        <input type="number" id="text-speed" min="10" step="10" value="200" disabled />
+      </label>
+      <button id="btn-text-start" class="btn btn-play" disabled>텍스트 시작</button>
+      <button id="btn-text-stop" class="btn btn-stop" disabled>텍스트 정지</button>
     </div>
   </section>
 

@@ -175,16 +175,30 @@ body {
   color: #8b93a1;
 }
 
-.pattern-field input {
+.pattern-field input,
+.pattern-field select,
+.pattern-field textarea {
   background: #12151a;
   border: 1px solid #2f3542;
   border-radius: 4px;
   color: #e6e8eb;
   padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
 }
 
-.pattern-field input:disabled {
+.pattern-field input:disabled,
+.pattern-field select:disabled,
+.pattern-field textarea:disabled {
   cursor: not-allowed;
+}
+
+.text-field-wide {
+  min-width: 220px;
+}
+
+.text-field-wide textarea {
+  resize: vertical;
 }
 
 #pattern-color {

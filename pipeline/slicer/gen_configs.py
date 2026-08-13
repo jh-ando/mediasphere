@@ -7,7 +7,12 @@ base-config.json 을 합쳐서 android/config.json 과 동일한 스키마로 �
 configs/{deviceId}.json 을 찍어낸다. 필드는 android/MainActivity.kt,
 MqttManager.kt, TimeSyncManager.kt 가 실제로 읽는 것만 채운다
 (deviceId, ssid, serverIp, multicastGroup, timecodePort, mqttBroker,
-videoPath, currentVideo, checksum, colorOverlayAlpha(선택)).
+videoPath, currentVideo, checksum, row/col(선택), colorOverlayAlpha(선택)).
+
+row/col은 device["meta"]에서 그대로 가져온다(gen_tiles.py의 flat 레이아웃이
+채워넣는 값). 텍스트 스크롤 기능이 "나는 전체 배너 중 어느 위치를 보여줘야
+하는지" 계산하는 데 쓴다 - sphere처럼 meta에 row/col이 없는 레이아웃이면
+그냥 생략된다.
 
 checksum은 폰이 로컬에 이미 있는 동일 파일명(예: P001.mp4)을 무조건 "맞다"고
 믿지 않고, 기대 체크섬과 비교해서 다르면 재다운로드하게 하는 데 쓰인다 -
@@ -68,6 +73,11 @@ def main():
         }
         if device.get("checksum"):
             config["checksum"] = device["checksum"]
+        meta = device.get("meta", {})
+        if "row" in meta:
+            config["row"] = meta["row"]
+        if "col" in meta:
+            config["col"] = meta["col"]
         if "colorOverlayAlpha" in base:
             config["colorOverlayAlpha"] = base["colorOverlayAlpha"]
 

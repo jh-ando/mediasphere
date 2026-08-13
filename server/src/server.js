@@ -32,6 +32,10 @@ const TOTAL_DEVICES = 499; // 구체 배치 위도별 합산(25+40+50*7+40+25+15
 const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline 처리
 const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
+const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
+// "video"/"pattern"만 받던 /api/mode를 "text"까지 세 값으로 확장하면서, 매핑을 한 곳에 모아둔다.
+const MODE_MQTT_TYPES = { video: 'MODE_VIDEO', pattern: 'MODE_PATTERN', text: 'MODE_TEXT' };
+const DEFAULT_TEXT_LEAD_TIME_MS = 3000; // 439대가 명령을 다 받을 시간 여유 - OTA와 비슷한 이유로 컬러보다 넉넉히
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
@@ -65,13 +69,23 @@ const state = {
   isPlaying: false,
   startAt: Date.now(),
   stoppedElapsedMs: 0,
-  // currentMode: "video" | "pattern" - 영상 모드/패턴 모드는 상호 배타적이다.
+  // currentMode: "video" | "pattern" | "text" - 세 모드는 상호 배타적이다.
   currentMode: 'video',
   patternConfig: {
     color: '#FFFFFF',
     interval: 500,
     duration: 3000,
     stepDelay: 200,
+  },
+  textScrollConfig: {
+    text: 'MediaSphere',
+    font: 'sans-serif',
+    fontSize: 120,
+    color: '#FFFFFF',
+    bgColor: '#000000',
+    align: 'center', // left | center | right
+    direction: 'left', // left | right | up | down
+    speed: 200, // px/sec
   },
   // 키오스크 스트레스 컬러 오버레이의 현재 상태. null이면 오버레이 없음(초기화된 상태).
   currentColor: {
@@ -105,6 +119,31 @@ function loadPatternConfig() {
 }
 
 loadPatternConfig();
+
+// textScrollConfig를 text-scroll-config.json에 저장한다 (POST /api/text/config 호출 시마다).
+function saveTextScrollConfig() {
+  try {
+    fs.mkdirSync(path.dirname(TEXT_SCROLL_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEXT_SCROLL_CONFIG_PATH, JSON.stringify(state.textScrollConfig, null, 2));
+  } catch (err) {
+    console.error('[HTTP] text-scroll-config.json 저장 실패:', err.message);
+  }
+}
+
+// 서버 시작 시 저장된 textScrollConfig가 있으면 불러온다 (loadPatternConfig와 동일 패턴).
+function loadTextScrollConfig() {
+  if (!fs.existsSync(TEXT_SCROLL_CONFIG_PATH)) return;
+
+  try {
+    const loaded = JSON.parse(fs.readFileSync(TEXT_SCROLL_CONFIG_PATH));
+    state.textScrollConfig = { ...state.textScrollConfig, ...loaded };
+    console.log(`[HTTP] text-scroll-config.json 로드 완료 - ${JSON.stringify(state.textScrollConfig)}`);
+  } catch (err) {
+    console.error('[HTTP] text-scroll-config.json 파싱 실패 - 기본값 유지:', err.message);
+  }
+}
+
+loadTextScrollConfig();
 
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
@@ -150,6 +189,29 @@ function loadManifest() {
 }
 
 loadManifest();
+
+// manifest의 devices[].meta.row를 세서 행별 디바이스 수 배열을 만든다. 텍스트 스크롤이
+// "전체 배너에서 내 몫이 어디인지" 계산하는 기준값 - 100대는 전부 20이지만, 구체처럼
+// 위도(행)마다 대수가 다른 레이아웃도 이 배열 하나로 표현된다(인덱스 = row).
+function computeRowCounts() {
+  if (!manifest) return null;
+
+  const counts = {};
+  let maxRow = -1;
+  for (const device of manifest.devices) {
+    const row = device.meta && device.meta.row;
+    if (row === undefined || row === null) continue;
+    counts[row] = (counts[row] || 0) + 1;
+    if (row > maxRow) maxRow = row;
+  }
+  if (maxRow < 0) return null;
+
+  const rowCounts = [];
+  for (let r = 0; r <= maxRow; r += 1) {
+    rowCounts.push(counts[r] || 0);
+  }
+  return rowCounts;
+}
 
 // 폰이 wall/ready/{deviceId}로 보고한 체크섬을 manifest의 기대값과 비교해 상태를 기록한다.
 function handleFileReady(deviceId, payload) {
@@ -465,16 +527,16 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, state });
 });
 
-// 모드 전환: "video" | "pattern". MQTT로 MODE_VIDEO/MODE_PATTERN을 retain 발행한다.
+// 모드 전환: "video" | "pattern" | "text". MQTT로 MODE_VIDEO/MODE_PATTERN/MODE_TEXT를 retain 발행한다.
 app.post('/api/mode', (req, res) => {
   const { mode } = req.body;
-  if (mode !== 'video' && mode !== 'pattern') {
-    res.status(400).json({ success: false, error: 'mode는 "video" 또는 "pattern"이어야 합니다.' });
+  if (!MODE_MQTT_TYPES[mode]) {
+    res.status(400).json({ success: false, error: 'mode는 "video", "pattern", "text" 중 하나여야 합니다.' });
     return;
   }
 
   state.currentMode = mode;
-  publishControl({ type: mode === 'video' ? 'MODE_VIDEO' : 'MODE_PATTERN' });
+  publishControl({ type: MODE_MQTT_TYPES[mode] });
 
   console.log(`[HTTP] 모드 전환 - ${mode}`);
   res.json({ success: true, state });
@@ -516,6 +578,65 @@ app.post('/api/pattern/stop', (req, res) => {
 
   console.log('[HTTP] 패턴 정지');
   res.json({ success: true });
+});
+
+// 텍스트 스크롤 설정 저장 (발행하지 않음 - TEXT_SCROLL 시점에 이 값을 사용한다)
+app.post('/api/text/config', (req, res) => {
+  const { text, font, fontSize, color, bgColor, align, direction, speed } = req.body;
+  if (text !== undefined) state.textScrollConfig.text = text;
+  if (font !== undefined) state.textScrollConfig.font = font;
+  if (fontSize !== undefined) state.textScrollConfig.fontSize = fontSize;
+  if (color !== undefined) state.textScrollConfig.color = color;
+  if (bgColor !== undefined) state.textScrollConfig.bgColor = bgColor;
+  if (align !== undefined) state.textScrollConfig.align = align;
+  if (direction !== undefined) state.textScrollConfig.direction = direction;
+  if (speed !== undefined) state.textScrollConfig.speed = speed;
+  saveTextScrollConfig();
+
+  console.log(`[HTTP] 텍스트 설정 저장 - ${JSON.stringify(state.textScrollConfig)}`);
+  res.json({ success: true, textScrollConfig: state.textScrollConfig });
+});
+
+// 텍스트 스크롤 시작 - manifest의 row별 디바이스 수(rowCounts)를 계산해서 함께 발행한다.
+// 각 폰은 자기 row/col(config.json에 배포 시점에 저장돼 있음)과 이 rowCounts를 가지고
+// 전체 배너 중 자기 몫만 그린다.
+app.post('/api/text/start', (req, res) => {
+  const rowCounts = computeRowCounts();
+  if (!rowCounts) {
+    res.status(400).json({
+      ok: false,
+      error: 'manifest가 없거나 devices[].meta.row 정보가 없습니다 - '
+        + 'deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.',
+    });
+    return;
+  }
+
+  const cfg = state.textScrollConfig;
+  const message = {
+    type: 'TEXT_SCROLL',
+    text: cfg.text,
+    font: cfg.font,
+    fontSize: cfg.fontSize,
+    color: cfg.color,
+    bgColor: cfg.bgColor,
+    align: cfg.align,
+    direction: cfg.direction,
+    speed: cfg.speed,
+    rowCounts,
+    totalRows: rowCounts.length,
+    startAt: Date.now() + DEFAULT_TEXT_LEAD_TIME_MS,
+  };
+  publishControl(message, { retain: false });
+
+  console.log(`[HTTP] 텍스트 스크롤 시작 - totalRows=${rowCounts.length} direction=${cfg.direction}`);
+  res.json({ ok: true, ...message });
+});
+
+app.post('/api/text/stop', (req, res) => {
+  publishControl({ type: 'TEXT_STOP' }, { retain: false });
+
+  console.log('[HTTP] 텍스트 스크롤 정지');
+  res.json({ ok: true });
 });
 
 // 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
@@ -815,6 +936,7 @@ function buildStatusPayload() {
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     patternConfig: state.patternConfig,
+    textScrollConfig: state.textScrollConfig,
     currentColor: state.currentColor,
   };
 

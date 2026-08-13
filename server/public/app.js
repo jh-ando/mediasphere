@@ -12,6 +12,7 @@ const btnStop = document.getElementById('btn-stop');
 
 const modeVideoBtn = document.getElementById('mode-video');
 const modePatternBtn = document.getElementById('mode-pattern');
+const modeTextBtn = document.getElementById('mode-text');
 const videoControlsEl = document.getElementById('video-controls');
 const patternControlsEl = document.getElementById('pattern-controls');
 const patternColorEl = document.getElementById('pattern-color');
@@ -26,12 +27,25 @@ const colorSwatchEl = document.getElementById('color-swatch');
 const colorLabelEl = document.getElementById('color-label');
 const btnColorReset = document.getElementById('btn-color-reset');
 
+const textControlsEl = document.getElementById('text-controls');
+const textContentEl = document.getElementById('text-content');
+const textFontEl = document.getElementById('text-font');
+const textFontSizeEl = document.getElementById('text-font-size');
+const textColorEl = document.getElementById('text-color');
+const textBgColorEl = document.getElementById('text-bg-color');
+const textAlignEl = document.getElementById('text-align');
+const textDirectionEl = document.getElementById('text-direction');
+const textSpeedEl = document.getElementById('text-speed');
+const btnTextStart = document.getElementById('btn-text-start');
+const btnTextStop = document.getElementById('btn-text-stop');
+
 const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
 
-// 패턴 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
+// 패턴/텍스트 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
+let editingTextConfig = false;
 
 // 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
@@ -122,28 +136,48 @@ function applyStatusUpdate(data) {
     patternDurationEl.value = data.patternConfig.duration;
     patternStepDelayEl.value = data.patternConfig.stepDelay;
   }
+
+  if (data.textScrollConfig && !editingTextConfig) {
+    textContentEl.value = data.textScrollConfig.text;
+    textFontEl.value = data.textScrollConfig.font;
+    textFontSizeEl.value = data.textScrollConfig.fontSize;
+    textColorEl.value = data.textScrollConfig.color;
+    textBgColorEl.value = data.textScrollConfig.bgColor;
+    textAlignEl.value = data.textScrollConfig.align;
+    textDirectionEl.value = data.textScrollConfig.direction;
+    textSpeedEl.value = data.textScrollConfig.speed;
+  }
 }
 
-// 모드 토글 강조 표시 + 영상/패턴 컨트롤 활성화 상태를 함께 갱신한다.
+// 모드 토글 강조 표시 + 영상/패턴/텍스트 컨트롤 활성화 상태를 함께 갱신한다.
 function setModeUi(mode) {
   const isVideo = mode === 'video';
+  const isPattern = mode === 'pattern';
+  const isText = mode === 'text';
 
   modeVideoBtn.classList.toggle('active', isVideo);
-  modePatternBtn.classList.toggle('active', !isVideo);
+  modePatternBtn.classList.toggle('active', isPattern);
+  modeTextBtn.classList.toggle('active', isText);
 
   btnPlay.disabled = !isVideo;
   btnStop.disabled = !isVideo;
   videoControlsEl.classList.toggle('disabled', !isVideo);
 
-  patternColorEl.disabled = isVideo;
-  patternIntervalEl.disabled = isVideo;
-  patternDurationEl.disabled = isVideo;
-  patternStepDelayEl.disabled = isVideo;
-  btnPatternPlay.disabled = isVideo;
-  btnPatternStop.disabled = isVideo;
-  btnSequencePlay.disabled = isVideo;
-  btnSequenceStop.disabled = isVideo;
-  patternControlsEl.classList.toggle('disabled', isVideo);
+  patternColorEl.disabled = !isPattern;
+  patternIntervalEl.disabled = !isPattern;
+  patternDurationEl.disabled = !isPattern;
+  patternStepDelayEl.disabled = !isPattern;
+  btnPatternPlay.disabled = !isPattern;
+  btnPatternStop.disabled = !isPattern;
+  btnSequencePlay.disabled = !isPattern;
+  btnSequenceStop.disabled = !isPattern;
+  patternControlsEl.classList.toggle('disabled', !isPattern);
+
+  [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
+    textAlignEl, textDirectionEl, textSpeedEl, btnTextStart, btnTextStop].forEach((el) => {
+    el.disabled = !isText;
+  });
+  textControlsEl.classList.toggle('disabled', !isText);
 }
 
 function postJson(url, body) {
@@ -161,6 +195,19 @@ function sendPatternConfig() {
     duration: Number(patternDurationEl.value),
     stepDelay: Number(patternStepDelayEl.value),
   }).catch((err) => console.error('[HTTP] 패턴 설정 저장 실패', err));
+}
+
+function sendTextConfig() {
+  postJson('/api/text/config', {
+    text: textContentEl.value,
+    font: textFontEl.value,
+    fontSize: Number(textFontSizeEl.value),
+    color: textColorEl.value,
+    bgColor: textBgColorEl.value,
+    align: textAlignEl.value,
+    direction: textDirectionEl.value,
+    speed: Number(textSpeedEl.value),
+  }).catch((err) => console.error('[HTTP] 텍스트 설정 저장 실패', err));
 }
 
 function formatTimecode(ms) {
@@ -210,6 +257,10 @@ modePatternBtn.addEventListener('click', () => {
   postJson('/api/mode', { mode: 'pattern' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
 });
 
+modeTextBtn.addEventListener('click', () => {
+  postJson('/api/mode', { mode: 'text' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
+});
+
 [patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl].forEach((el) => {
   el.addEventListener('focus', () => {
     editingPatternConfig = true;
@@ -218,6 +269,25 @@ modePatternBtn.addEventListener('click', () => {
     editingPatternConfig = false;
   });
   el.addEventListener('change', sendPatternConfig);
+});
+
+[textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
+  textAlignEl, textDirectionEl, textSpeedEl].forEach((el) => {
+  el.addEventListener('focus', () => {
+    editingTextConfig = true;
+  });
+  el.addEventListener('blur', () => {
+    editingTextConfig = false;
+  });
+  el.addEventListener('change', sendTextConfig);
+});
+
+btnTextStart.addEventListener('click', () => {
+  fetch('/api/text/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 시작 요청 실패', err));
+});
+
+btnTextStop.addEventListener('click', () => {
+  fetch('/api/text/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 정지 요청 실패', err));
 });
 
 btnPatternPlay.addEventListener('click', () => {

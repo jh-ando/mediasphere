@@ -56,9 +56,10 @@ sealed class MqttControlMessage {
     // (SEQUENCE_START와 같은 패턴: 브로드캐스트로 받고 폰이 자기 deviceId로 스스로 필터링).
     data class RestartApp(val targetDeviceIds: List<Int>?) : MqttControlMessage()
 
-    // 영상 모드 / 패턴 모드 전환
+    // 영상 모드 / 패턴 모드 / 텍스트 스크롤 모드 전환 (셋은 상호 배타적)
     object ModeVideo : MqttControlMessage()
     object ModePattern : MqttControlMessage()
+    object ModeText : MqttControlMessage()
 
     // 패턴(점멸) 시작 - color는 "#RRGGBB" 형태의 원본 문자열 그대로 전달한다.
     data class PatternStart(val color: String, val interval: Long, val duration: Long, val startAt: Long) :
@@ -80,6 +81,24 @@ sealed class MqttControlMessage {
     // (물리 설치 시 "이 폰이 몇 번인지" 확인용). 특정 폰이 아니라 전체에 방송한다.
     data class ShowId(val durationMs: Long) : MqttControlMessage()
 
+    // 텍스트 스크롤 시작 - rowCounts[i] = i번째 행의 디바이스 수(서버가 manifest에서 계산).
+    // 폰은 자기 row/col(config.json에 배포 시점에 저장됨)과 이 배열로 전체 배너 중
+    // 자기 몫만 계산해서 그린다. align: left/center/right, direction: left/right/up/down.
+    data class TextScroll(
+        val text: String,
+        val font: String,
+        val fontSize: Int,
+        val color: String,
+        val bgColor: String,
+        val align: String,
+        val direction: String,
+        val speedPxPerSec: Float,
+        val rowCounts: List<Int>,
+        val totalRows: Int,
+        val startAt: Long,
+    ) : MqttControlMessage()
+    object TextStop : MqttControlMessage()
+
     // 키오스크 스트레스 컬러 오버레이 - wall/control로 오는 실시간 명령 (startAt까지 대기 후 적용)
     data class ColorChange(val color: String, val startAt: Long, val duration: Long) : MqttControlMessage()
     data class ColorClear(val startAt: Long) : MqttControlMessage()
@@ -92,8 +111,15 @@ sealed class MqttControlMessage {
     // wall/state/color와 같은 패턴: 재접속/재부팅해도 서버가 다시 보낼 필요 없이 retain으로 즉시 받는다.
     // checksum: 로컬에 같은 파일명이 이미 있어도 무조건 믿지 않고 이 값과 비교하기 위함
     // (없으면 null - 옛 manifest이거나 gen_manifest.py --skip-checksum인 경우).
-    data class DeviceConfig(val videoPath: String, val currentVideo: String, val checksum: String?) :
-        MqttControlMessage()
+    // row/col: 텍스트 스크롤에서 "나는 전체 배너 중 어디를 보여줘야 하는지" 계산하는 데 쓴다
+    // (없으면 null - sphere 등 row/col 개념이 없는 레이아웃이거나 옛 config인 경우).
+    data class DeviceConfig(
+        val videoPath: String,
+        val currentVideo: String,
+        val checksum: String?,
+        val row: Int?,
+        val col: Int?,
+    ) : MqttControlMessage()
 
     // wall/ota(retain) - 새 APK 배포 신호. stepDelayMs는 SEQUENCE_START와 동일하게
     // (deviceId-1)*stepDelayMs 만큼 폰마다 스스로 시차를 계산하는 롤링 배포용.
@@ -291,6 +317,7 @@ class MqttManager(
                 )
                 "MODE_VIDEO" -> MqttControlMessage.ModeVideo
                 "MODE_PATTERN" -> MqttControlMessage.ModePattern
+                "MODE_TEXT" -> MqttControlMessage.ModeText
                 "PATTERN_START" -> MqttControlMessage.PatternStart(
                     color = json.getString("color"),
                     interval = json.getLong("interval"),
@@ -310,6 +337,23 @@ class MqttManager(
                 "SHOW_ID" -> MqttControlMessage.ShowId(
                     durationMs = json.optLong("duration", DEFAULT_SHOW_ID_DURATION_MS),
                 )
+                "TEXT_SCROLL" -> {
+                    val rowCountsArr = json.getJSONArray("rowCounts")
+                    MqttControlMessage.TextScroll(
+                        text = json.getString("text"),
+                        font = json.getString("font"),
+                        fontSize = json.getInt("fontSize"),
+                        color = json.getString("color"),
+                        bgColor = json.getString("bgColor"),
+                        align = json.getString("align"),
+                        direction = json.getString("direction"),
+                        speedPxPerSec = json.getDouble("speed").toFloat(),
+                        rowCounts = (0 until rowCountsArr.length()).map { rowCountsArr.getInt(it) },
+                        totalRows = json.getInt("totalRows"),
+                        startAt = json.getLong("startAt"),
+                    )
+                }
+                "TEXT_STOP" -> MqttControlMessage.TextStop
                 "COLOR_CHANGE" -> MqttControlMessage.ColorChange(
                     color = json.getString("color"),
                     startAt = json.getLong("startAt"),
@@ -348,6 +392,8 @@ class MqttManager(
                 videoPath = json.getString("videoPath"),
                 currentVideo = json.getString("currentVideo"),
                 checksum = if (json.has("checksum")) json.getString("checksum") else null,
+                row = if (json.has("row")) json.getInt("row") else null,
+                col = if (json.has("col")) json.getInt("col") else null,
             )
         } catch (e: Exception) {
             Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)
