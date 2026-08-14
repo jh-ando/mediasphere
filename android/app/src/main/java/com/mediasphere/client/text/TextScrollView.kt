@@ -5,9 +5,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
 import com.mediasphere.client.sync.TimeSyncManager
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 /**
  * 전체 폰 그리드를 하나의 배너로 보고, 이 폰이 맡은 부분만 그리는 텍스트 스크롤 뷰.
@@ -17,6 +20,19 @@ import com.mediasphere.client.sync.TimeSyncManager
  * 시점부터 자체 상대시간으로 돌아서 MQTT 전파 지연만큼 폰마다 어긋난다. 대신 매 프레임
  * (postOnAnimation으로 재귀 예약) TimeSyncManager.now() - startAt으로 절대 위치를
  * 다시 계산한다 - DriftCorrector와 같은 이유/방식.
+ *
+ * 단, TimeSyncManager.now()를 매 프레임 그대로 쓰지 않고 smoothedOffsetMs로 완충한다.
+ * TimeSyncManager는 1분마다 백그라운드에서 재동기화하며 offsetMs를 갱신하는데:
+ *   - 처음엔(구현 v1) 이 값을 매 프레임 그대로 읽었더니, 재동기화 순간 offsetMs가 조금만
+ *     바뀌어도 위치가 즉시 픽셀 단위로 점프했다(네트워크 RTT가 불안정한 폰일수록 크게 튐).
+ *   - 그다음(구현 v2) start() 시점의 offsetMs를 한 번 캡처해 세션 내내 고정값으로 썼더니,
+ *     점프는 없어졌지만 그 폰의 하드웨어 시계 자체가 다른 폰보다 빠르게/느리게 도는 경우
+ *     (오차가 분당 1ms 미만일 거라 가정했던 게 실제로는 틀렸음 - 실기기 편차가 더 컸다)
+ *     보정을 아예 못 받아서 세션이 길어질수록 계속 앞서가거나 뒤처지는 문제가 생겼다.
+ * 그래서 DriftCorrector(영상)가 쓰는 것과 같은 원리로 절충한다 - 실시간 offsetMs를 목표값
+ * 삼아 매 프레임 조금씩(최대 MAX_OFFSET_CATCHUP_RATIO 비율로) 쫓아가고, 그 폭을 벗어나는
+ * 큰 변화(OFFSET_SNAP_THRESHOLD_MS 초과 - 수동 시각 변경 등)만 즉시 반영한다. 재동기화로
+ * 인한 순간 점프도 없고, 하드웨어 시계 편차로 인한 지속적 어긋남도 계속 보정된다.
  *
  * 전체 그리드(모든 row x col)를 하나의 큰 캔버스로 보고, 텍스트 블록을 그 위에 "한 번만"
  * 배치한 뒤 각 폰이 자기 row/col 오프셋만큼 잘라서 보여준다 - 행마다 반복해서 그리는 게
@@ -31,6 +47,14 @@ import com.mediasphere.client.sync.TimeSyncManager
  * 벌어져 보인다. 0이면 기존처럼 폰이 빈틈없이 붙어있는 것으로 취급(구체 등 미지원 레이아웃).
  */
 class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+
+    companion object {
+        // 1프레임에 최대 이만큼 비율(실제 경과 시간 대비)까지만 목표 offset을 쫓아간다 -
+        // DriftCorrector의 최대 속도 보정폭(±5%)과 같은 값.
+        private const val MAX_OFFSET_CATCHUP_RATIO = 0.05
+        // 이 값을 넘는 offset 변화(수동 시각 변경 등 드문 경우)는 서서히 쫓아가지 않고 즉시 반영한다.
+        private const val OFFSET_SNAP_THRESHOLD_MS = 500L
+    }
 
     private data class Params(
         val lines: List<String>,
@@ -49,6 +73,11 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
     )
 
     private var params: Params? = null
+
+    // TimeSyncManager.now()를 매 프레임 완충 없이 그대로 쓰지 않기 위한 상태 - start()마다
+    // 초기화되고, onDraw()가 매 프레임 조금씩 목표(실시간 offsetMs)로 쫓아가며 갱신한다.
+    private var smoothedOffsetMs: Double = 0.0
+    private var lastFrameRealtimeMs: Long = 0L
 
     private val drawLoop = object : Runnable {
         override fun run() {
@@ -99,6 +128,10 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             gapRatioY = gapRatioY.coerceIn(0.0, 0.9),
         )
 
+        // 새 세션 시작 - 목표(실시간 offsetMs)와 완전히 일치한 상태로 초기화한다.
+        smoothedOffsetMs = TimeSyncManager.currentOffsetMs().toDouble()
+        lastFrameRealtimeMs = SystemClock.elapsedRealtime()
+
         removeCallbacks(drawLoop)
         post(drawLoop)
     }
@@ -139,7 +172,24 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val gridWidthPx = gridCols * pitchW
         val gridHeightPx = p.totalRows.coerceAtLeast(1) * pitchH
 
-        val elapsedSec = (TimeSyncManager.now() - p.startAt).coerceAtLeast(0) / 1000f
+        // smoothedOffsetMs를 실시간 목표(TimeSyncManager.currentOffsetMs())로 조금씩 쫓아간다
+        // - 클래스 상단 주석 참고. 급격한 변화만 즉시 반영하고, 그 외엔 이번 프레임 실제 경과
+        // 시간의 MAX_OFFSET_CATCHUP_RATIO만큼만 좁힌다.
+        val nowRealtime = SystemClock.elapsedRealtime()
+        val frameDeltaMs = (nowRealtime - lastFrameRealtimeMs).coerceAtLeast(0)
+        lastFrameRealtimeMs = nowRealtime
+
+        val targetOffsetMs = TimeSyncManager.currentOffsetMs()
+        val offsetDrift = targetOffsetMs - smoothedOffsetMs
+        smoothedOffsetMs += if (abs(offsetDrift) > OFFSET_SNAP_THRESHOLD_MS) {
+            offsetDrift
+        } else {
+            val maxStepMs = frameDeltaMs * MAX_OFFSET_CATCHUP_RATIO
+            offsetDrift.coerceIn(-maxStepMs, maxStepMs)
+        }
+
+        val smoothedNow = System.currentTimeMillis() + smoothedOffsetMs.roundToLong()
+        val elapsedSec = (smoothedNow - p.startAt).coerceAtLeast(0) / 1000f
         val distance = elapsedSec * p.speedPxPerSec
 
         // 스크롤 축은 흐르고, 반대 축은 캔버스 전체 기준으로 가운데 고정된다.

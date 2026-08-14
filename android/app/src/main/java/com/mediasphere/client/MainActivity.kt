@@ -54,7 +54,12 @@ private const val SYNC_TAG = "[FileSync]"
 // config.json 읽기 실패 등으로 videoPath/currentVideo를 못 구했을 때만 쓰는 최후 fallback
 private const val DEFAULT_VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
 private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 대기 시간 - 초기 drift가 크게 나는 것을 방지
-private const val TIME_SYNC_INTERVAL_MS = 60_000L // TimeSyncManager 재동기화 주기 (1분)
+// TimeSyncManager 재동기화 주기. 영상 모드는 DriftCorrector가 초당 30회 오는 UDP
+// 타임코드로 계속 보정하지만, 텍스트/패턴 모드는 UDP 타임코드를 안 받아서 이 재동기화가
+// 유일한 기준이다 - 주기가 길수록 그 사이 폰 시계 편차가 그대로 누적된다(1분일 때 특정
+// 폰에서 텍스트 스크롤 위치가 눈에 띄게 계속 앞서가는 문제 확인됨). 폐쇄망 로컬 요청이라
+// 부담이 거의 없어 짧게 잡는다.
+private const val TIME_SYNC_INTERVAL_MS = 5_000L // TimeSyncManager 재동기화 주기 (5초)
 private const val CONFIG_PATH = "/sdcard/mediasphere/config.json"
 private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
 private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
