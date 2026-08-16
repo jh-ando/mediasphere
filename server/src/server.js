@@ -36,7 +36,10 @@ const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
 const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
 const TEXT_PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-pattern-config.json');
-const DEFAULT_TEXT_PATTERN_LEAD_TIME_MS = 3000; // 텍스트 스크롤과 동일 - 439대가 명령을 다 받을 시간 여유
+// 폐쇄망 로컬 MQTT라 개별 발행(최대 439건)도 통상 수십~수백ms 안에 전달된다 - 1초면
+// 여유 있음. 혹시 이 시각을 놓친 폰이 있어도 TextPatternAnimator가 즉시(지연 0으로)
+// 페이드인을 시작할 뿐 에러 없이 우아하게 처리된다(그 폰만 살짝 늦게 보일 뿐).
+const DEFAULT_TEXT_PATTERN_LEAD_TIME_MS = 1000;
 // "video"/"pattern"만 받던 /api/mode를 "text"까지 세 값으로 확장하면서, 매핑을 한 곳에 모아둔다.
 const MODE_MQTT_TYPES = { video: 'MODE_VIDEO', pattern: 'MODE_PATTERN', text: 'MODE_TEXT' };
 const DEFAULT_TEXT_LEAD_TIME_MS = 3000; // 439대가 명령을 다 받을 시간 여유 - OTA와 비슷한 이유로 컬러보다 넉넉히
