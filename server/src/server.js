@@ -696,29 +696,34 @@ app.post('/api/text-pattern/config', (req, res) => {
   res.json({ success: true, textPatternConfig: state.textPatternConfig });
 });
 
-// 텍스트 패턴 시작 - manifest의 row/col을 비트맵과 대조해 폰별로 다른 색을
-// wall/pattern/{deviceId}에 개별 발행한다(COLOR_CHANGE와 달리 전체 방송이 아니라 폰마다 다름).
-// 전경(글자) 셀은 charIndex별로 시차를 둔 fadeInAt과, 모든 글자가 다 켜진 뒤 공유하는
-// fadeOutAt을 함께 보낸다 - 폰은 이 절대 시각 두 개만으로 로컬 애니메이션을 돌린다.
-app.post('/api/text-pattern/start', (req, res) => {
-  if (!manifest) {
-    res.status(400).json({
-      ok: false,
-      error: 'manifest가 없습니다 - deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.',
-    });
-    return;
-  }
+// 순환 중인 텍스트 패턴의 "다음 단어 예약" 타이머 - /api/text-pattern/stop이나
+// 새 /api/text-pattern/start가 오면 반드시 clearTimeout해야 한다. 안 그러면 정지시켜도
+// 예약된 다음 단어가 나중에 튀어나온다.
+let textPatternTimer = null;
 
+// 단어 하나를 지금 표시하고, 그 단어의 페이드아웃이 끝나는 시각에 다음 단어(순환)를
+// 예약한다. manifest의 row/col을 비트맵과 대조해 폰별로 다른 색을 wall/pattern/{deviceId}에
+// 개별 발행한다(COLOR_CHANGE와 달리 전체 방송이 아니라 폰마다 다름). 전경(글자) 셀은
+// charIndex별로 시차를 둔 fadeInAt과, 모든 글자가 다 켜진 뒤 공유하는 fadeOutAt을 함께
+// 보낸다 - 폰은 이 절대 시각 두 개만으로 로컬 애니메이션을 돌린다(단어가 바뀔 때마다
+// 새 메시지가 오면 Android TextPatternAnimator가 진행 중이던 이전 애니메이션을 알아서
+// 취소하고 새로 시작하므로, 서버는 그냥 다음 단어를 발행하기만 하면 된다).
+function dispatchTextPatternWord(words, index) {
+  if (!manifest) {
+    console.error('[HTTP] 텍스트 패턴 순환 중단 - manifest 없음');
+    return 0;
+  }
   const rowCounts = computeRowCounts();
   if (!rowCounts) {
-    res.status(400).json({ ok: false, error: 'devices[].meta.row 정보가 없습니다.' });
-    return;
+    console.error('[HTTP] 텍스트 패턴 순환 중단 - devices[].meta.row 정보 없음');
+    return 0;
   }
   const gridCols = Math.max(...rowCounts);
   const totalRows = rowCounts.length;
 
   const cfg = state.textPatternConfig;
-  const { grid, numChars } = computeTextPatternGrid(cfg.text, gridCols, totalRows);
+  const word = words[index % words.length];
+  const { grid, numChars } = computeTextPatternGrid(word, gridCols, totalRows);
 
   const baseStartAt = Date.now() + DEFAULT_TEXT_PATTERN_LEAD_TIME_MS;
   const fadeOutAt = baseStartAt + Math.max(0, numChars - 1) * cfg.charStaggerMs + cfg.fadeInMs + cfg.holdMs;
@@ -749,11 +754,52 @@ app.post('/api/text-pattern/start', (req, res) => {
     count += 1;
   }
 
-  console.log(`[HTTP] 텍스트 패턴 시작 - text="${cfg.text}" 대상 ${count}대, fadeOutAt=${fadeOutAt}`);
-  res.json({ ok: true, text: cfg.text, targets: count, baseStartAt, fadeOutAt });
+  console.log(`[HTTP] 텍스트 패턴 표시 - word="${word}" (${(index % words.length) + 1}/${words.length}) 대상 ${count}대`);
+
+  const cycleEndAt = fadeOutAt + cfg.fadeOutMs;
+  textPatternTimer = setTimeout(() => {
+    dispatchTextPatternWord(words, index + 1);
+  }, Math.max(0, cycleEndAt - Date.now()));
+
+  return count;
+}
+
+// 텍스트 패턴 시작 - textPatternConfig.text를 줄바꿈으로 나눠 여러 단어로 취급한다.
+// 첫 단어가 페이드아웃까지 끝나면 자동으로 다음 단어를 이어서 표시하고, 마지막 단어
+// 다음엔 다시 첫 단어로 돌아가 계속 순환한다(설치 전시 특성상 무한 반복이 기본).
+app.post('/api/text-pattern/start', (req, res) => {
+  if (!manifest) {
+    res.status(400).json({
+      ok: false,
+      error: 'manifest가 없습니다 - deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.',
+    });
+    return;
+  }
+
+  const rowCounts = computeRowCounts();
+  if (!rowCounts) {
+    res.status(400).json({ ok: false, error: 'devices[].meta.row 정보가 없습니다.' });
+    return;
+  }
+
+  const words = state.textPatternConfig.text.split('\n').map((w) => w.trim()).filter((w) => w.length > 0);
+  if (words.length === 0) {
+    res.status(400).json({ ok: false, error: '표시할 텍스트가 없습니다.' });
+    return;
+  }
+
+  if (textPatternTimer) clearTimeout(textPatternTimer);
+  const count = dispatchTextPatternWord(words, 0);
+
+  console.log(`[HTTP] 텍스트 패턴 시작 - 단어 ${words.length}개 순환 재생, 대상 ${count}대`);
+  res.json({ ok: true, words, targets: count });
 });
 
 app.post('/api/text-pattern/stop', (req, res) => {
+  if (textPatternTimer) {
+    clearTimeout(textPatternTimer);
+    textPatternTimer = null;
+  }
   publishControl({ type: 'TEXT_PATTERN_STOP' }, { retain: false });
 
   console.log('[HTTP] 텍스트 패턴 정지');

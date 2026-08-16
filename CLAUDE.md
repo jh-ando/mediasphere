@@ -188,7 +188,8 @@ MediaSphere/
 - POST /api/text/config    {"text","font","fontSize","color","bgColor","align","direction","speed"} (저장만, 발행 안 함)
 - POST /api/text/start
 - POST /api/text/stop
-- POST /api/text-pattern/config {"text","fgColor","bgColor","charStaggerMs","fadeInMs","holdMs","fadeOutMs"} (저장만, 발행 안 함)
+- POST /api/text-pattern/config {"text","fgColor","bgColor","charStaggerMs","fadeInMs","holdMs","fadeOutMs"}
+                 (저장만, 발행 안 함. text는 줄바꿈으로 여러 단어 - 한 단어씩 순환 표시)
 - POST /api/text-pattern/start
 - POST /api/text-pattern/stop
 
@@ -302,6 +303,16 @@ MediaSphere/
   텍스트 스크롤에서 겪은 TimeSync 재동기화발 점프/드리프트 문제 자체가 애초에 없다.
 - 구체는 이번 라운드 범위 밖 - 폰 배치 자체를 픽셀로 쓰는 방식이라 텍스트 스크롤보다
   오히려 구체 확장이 자연스러울 수 있음(위도/경도 격자를 그대로 픽셀 그리드로) - 추후 검토.
+- 폰트 폭은 3 -> 5 -> 4로 두 번 조정함(실기기 가독성 피드백). 20열 그리드 기준 4폭이면
+  4글자(4x4+gap3=19≤20)까지 한 화면에 들어와서 5폭(4글자면 23칸 필요, 초과)보다 나음.
+- **여러 단어 순환**: `textPatternConfig.text`를 줄바꿈으로 나눠 단어 목록으로 취급한다.
+  서버가 한 단어의 표시 사이클(페이드인+유지+페이드아웃)이 끝나는 시각에 맞춰
+  `setTimeout`으로 다음 단어를 예약 발행하고, 마지막 단어 다음엔 다시 첫 단어로
+  순환한다(`dispatchTextPatternWord()` / `textPatternTimer`). Android 쪽은 변경 없음 -
+  단어가 바뀔 때마다 오는 새 TEXT_PATTERN_CELL을 받으면 TextPatternAnimator가 이전
+  애니메이션을 자동으로 취소하고 새로 시작하므로, 순환 로직은 전부 서버에만 있다.
+  `/api/text-pattern/stop`은 반드시 이 타이머도 clearTimeout해야 한다 - 안 그러면
+  정지시켜도 예약된 다음 단어가 나중에 튀어나온다.
 
 ## 주의사항
 - WifiManager.MulticastLock 없으면 UDP 수신 안 됨
