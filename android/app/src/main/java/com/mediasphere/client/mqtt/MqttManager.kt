@@ -42,6 +42,8 @@ private const val OTA_STATUS_TOPIC_PREFIX = "wall/ota/status/"
 private const val OTA_STATUS_QOS = 1
 private const val DEFAULT_SHOW_ID_DURATION_MS = 5000L
 private const val HEARTBEAT_INTERVAL_MS = 5000L
+private const val PATTERN_CELL_TOPIC_PREFIX = "wall/pattern/"
+private const val PATTERN_CELL_QOS = 1
 
 // wall/control로 수신하는 제어 명령
 sealed class MqttControlMessage {
@@ -99,6 +101,18 @@ sealed class MqttControlMessage {
     ) : MqttControlMessage()
     object TextStop : MqttControlMessage()
 
+    // wall/pattern/{deviceId} - 텍스트 패턴에서 이 폰이 맡은 셀의 색/애니메이션.
+    // fadeInAt이 있으면 전경(글자) 셀 - 그 시각까지 대기 후 페이드인, fadeOutAt까지 유지한
+    // 뒤 페이드아웃한다. fadeInAt이 없으면 배경 셀 - 애니메이션 없이 즉시 color로 고정한다.
+    data class TextPatternCell(
+        val color: String,
+        val fadeInAt: Long?,
+        val fadeInMs: Long?,
+        val fadeOutAt: Long?,
+        val fadeOutMs: Long?,
+    ) : MqttControlMessage()
+    object TextPatternStop : MqttControlMessage()
+
     // 키오스크 스트레스 컬러 오버레이 - wall/control로 오는 실시간 명령 (startAt까지 대기 후 적용)
     data class ColorChange(val color: String, val startAt: Long, val duration: Long) : MqttControlMessage()
     data class ColorClear(val startAt: Long) : MqttControlMessage()
@@ -147,6 +161,7 @@ class MqttManager(
     private var client: MqttAsyncClient? = null
     private var deviceId: Int = DEFAULT_DEVICE_ID
     private var deviceTopic: String = ""
+    private var patternCellTopic: String = ""
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -157,6 +172,7 @@ class MqttManager(
         val brokerUrl = readBrokerUrl()
         deviceId = readDeviceId()
         deviceTopic = "$DEVICE_TOPIC_PREFIX$deviceId"
+        patternCellTopic = "$PATTERN_CELL_TOPIC_PREFIX$deviceId"
         val clientId = "mediasphere-${System.currentTimeMillis()}"
 
         try {
@@ -172,6 +188,7 @@ class MqttManager(
                     subscribeColorState()
                     subscribeDevice()
                     subscribeOta()
+                    subscribePatternCell()
                     startHeartbeat()
                 }
 
@@ -188,6 +205,7 @@ class MqttManager(
                         COLOR_STATE_TOPIC -> parseColorState(payload)?.let(onControl)
                         deviceTopic -> parseDeviceConfig(payload)?.let(onControl)
                         OTA_TOPIC -> parseOtaUpdate(payload)?.let(onControl)
+                        patternCellTopic -> parseTextPatternCell(payload)?.let(onControl)
                         else -> Log.e(TAG, "알 수 없는 topic - $topic")
                     }
                 }
@@ -303,6 +321,27 @@ class MqttManager(
         }
     }
 
+    private fun subscribePatternCell() {
+        try {
+            client?.subscribe(
+                patternCellTopic,
+                PATTERN_CELL_QOS,
+                null,
+                object : IMqttActionListener {
+                    override fun onSuccess(asyncActionToken: IMqttToken?) {
+                        Log.d(TAG, "구독 완료 - $patternCellTopic")
+                    }
+
+                    override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                        Log.e(TAG, "구독 실패 - $patternCellTopic", exception)
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "구독 요청 실패 - $patternCellTopic", e)
+        }
+    }
+
     private fun parseControlMessage(payload: String): MqttControlMessage? {
         return try {
             val json = JSONObject(payload)
@@ -358,6 +397,7 @@ class MqttManager(
                     )
                 }
                 "TEXT_STOP" -> MqttControlMessage.TextStop
+                "TEXT_PATTERN_STOP" -> MqttControlMessage.TextPatternStop
                 "COLOR_CHANGE" -> MqttControlMessage.ColorChange(
                     color = json.getString("color"),
                     startAt = json.getLong("startAt"),
@@ -403,6 +443,25 @@ class MqttManager(
             )
         } catch (e: Exception) {
             Log.e(TAG, "디바이스 config 파싱 실패: $payload", e)
+            null
+        }
+    }
+
+    // wall/pattern/{deviceId}(non-retain) 전용 파서 - fadeInAt이 있으면 전경(글자) 셀,
+    // 없으면 배경 셀(즉시 고정)로 구분한다.
+    private fun parseTextPatternCell(payload: String): MqttControlMessage? {
+        if (payload.isEmpty()) return null
+        return try {
+            val json = JSONObject(payload)
+            MqttControlMessage.TextPatternCell(
+                color = json.getString("color"),
+                fadeInAt = if (json.has("fadeInAt")) json.getLong("fadeInAt") else null,
+                fadeInMs = if (json.has("fadeInMs")) json.getLong("fadeInMs") else null,
+                fadeOutAt = if (json.has("fadeOutAt")) json.getLong("fadeOutAt") else null,
+                fadeOutMs = if (json.has("fadeOutMs")) json.getLong("fadeOutMs") else null,
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "텍스트 패턴 셀 파싱 실패: $payload", e)
             null
         }
     }

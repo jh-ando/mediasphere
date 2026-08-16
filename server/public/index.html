@@ -59,6 +59,39 @@
       <button id="btn-sequence-stop" class="btn btn-stop" disabled>순차 점멸 정지</button>
     </div>
 
+    <div id="text-pattern-controls" class="control-group pattern-controls disabled">
+      <label class="pattern-field text-field-wide">
+        텍스트 패턴 (폰 배치를 픽셀로 사용, 짧게)
+        <input type="text" id="text-pattern-content" value="Hi" disabled />
+      </label>
+      <label class="pattern-field">
+        글자색
+        <input type="color" id="text-pattern-fg-color" value="#ffffff" disabled />
+      </label>
+      <label class="pattern-field">
+        배경색
+        <input type="color" id="text-pattern-bg-color" value="#000000" disabled />
+      </label>
+      <label class="pattern-field">
+        글자당 딜레이(ms)
+        <input type="number" id="text-pattern-char-stagger" min="0" step="50" value="400" disabled />
+      </label>
+      <label class="pattern-field">
+        페이드인(ms)
+        <input type="number" id="text-pattern-fade-in" min="0" step="50" value="400" disabled />
+      </label>
+      <label class="pattern-field">
+        유지시간(ms)
+        <input type="number" id="text-pattern-hold" min="0" step="500" value="3000" disabled />
+      </label>
+      <label class="pattern-field">
+        페이드아웃(ms)
+        <input type="number" id="text-pattern-fade-out" min="0" step="50" value="400" disabled />
+      </label>
+      <button id="btn-text-pattern-start" class="btn btn-play" disabled>텍스트 패턴 시작</button>
+      <button id="btn-text-pattern-stop" class="btn btn-stop" disabled>텍스트 패턴 정지</button>
+    </div>
+
     <div id="text-controls" class="control-group pattern-controls disabled">
       <label class="pattern-field text-field-wide">
         텍스트 (줄바꿈 가능)

@@ -33,6 +33,7 @@ import com.mediasphere.client.mqtt.MqttControlMessage
 import com.mediasphere.client.mqtt.MqttManager
 import com.mediasphere.client.network.TimecodeReceiver
 import com.mediasphere.client.pattern.PatternAnimator
+import com.mediasphere.client.pattern.TextPatternAnimator
 import com.mediasphere.client.sync.DriftCorrector
 import com.mediasphere.client.sync.TimeSyncManager
 import com.mediasphere.client.text.TextScrollView
@@ -62,6 +63,7 @@ private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 
 private const val TIME_SYNC_INTERVAL_MS = 5_000L // TimeSyncManager 재동기화 주기 (5초)
 private const val CONFIG_PATH = "/sdcard/mediasphere/config.json"
 private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
+private const val DEFAULT_TEXT_PATTERN_FADE_MS = 400L // 서버가 fadeInMs/fadeOutMs를 안 보낸 경우 fallback
 private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
 private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 횟수"라 9를 주면 총 10회 재생된다
 private const val SERVER_PORT = 3000
@@ -294,6 +296,7 @@ class MainActivity : ComponentActivity() {
         timecodeReceiver.stop()
         mqttManager.disconnect()
         PatternAnimator.stop()
+        TextPatternAnimator.stop()
         pendingColorJob?.cancel()
         colorAnimator?.cancel()
         unregisterReceiver(timeChangeReceiver)
@@ -375,6 +378,8 @@ class MainActivity : ComponentActivity() {
             MqttControlMessage.ModeText -> handleModeText()
             is MqttControlMessage.TextScroll -> handleTextScroll(message)
             MqttControlMessage.TextStop -> handleTextStop()
+            is MqttControlMessage.TextPatternCell -> handleTextPatternCell(message)
+            MqttControlMessage.TextPatternStop -> handleTextPatternStop()
             is MqttControlMessage.PatternStart -> handlePatternStart(message)
             MqttControlMessage.PatternStop -> handlePatternStop()
             is MqttControlMessage.SequenceStart -> handleSequenceStart(message)
@@ -392,6 +397,7 @@ class MainActivity : ComponentActivity() {
     private fun handleModeVideo() {
         pendingPatternJob?.cancel()
         PatternAnimator.stop()
+        TextPatternAnimator.stop()
         patternView.visibility = View.GONE
         patternView.alpha = 0f
         textScrollView.stop()
@@ -422,6 +428,7 @@ class MainActivity : ComponentActivity() {
         textScrollView.stop()
         textScrollView.visibility = View.GONE
         PatternAnimator.stop()
+        TextPatternAnimator.stop()
         playbackStarted = false
         pendingStartAt = null
         applyPendingVideoFileIfAny()
@@ -443,6 +450,7 @@ class MainActivity : ComponentActivity() {
         playerView.visibility = View.GONE
         pendingPatternJob?.cancel()
         PatternAnimator.stop()
+        TextPatternAnimator.stop()
         patternView.visibility = View.GONE
         patternView.alpha = 0f
         playbackStarted = false
@@ -491,6 +499,46 @@ class MainActivity : ComponentActivity() {
         Log.d(TAG, "텍스트 스크롤 정지")
     }
 
+    // 텍스트 패턴에서 이 폰이 맡은 셀 하나 - 패턴 모드 내 기능이라 패턴 모드일 때만 처리한다
+    // (PATTERN_START와 같은 이유). 진행 중인 점멸(PatternAnimator)이 있으면 먼저 정지한다 -
+    // 패턴 모드 안에서 점멸과 텍스트 패턴은 동시에 쓰지 않는 상호 배타적 하위 기능이다.
+    private fun handleTextPatternCell(message: MqttControlMessage.TextPatternCell) {
+        if (currentMode != Mode.PATTERN) {
+            Log.d(PATTERN_TAG, "PATTERN 모드가 아니어서 TEXT_PATTERN_CELL 무시")
+            return
+        }
+
+        val color = try {
+            Color.parseColor(message.color)
+        } catch (e: IllegalArgumentException) {
+            Log.e(PATTERN_TAG, "텍스트 패턴 색상 파싱 실패 - ${message.color}", e)
+            return
+        }
+
+        PatternAnimator.stop()
+
+        if (message.fadeInAt != null) {
+            TextPatternAnimator.animate(
+                view = patternView,
+                color = color,
+                fadeInAt = message.fadeInAt,
+                fadeInMs = message.fadeInMs ?: DEFAULT_TEXT_PATTERN_FADE_MS,
+                fadeOutAt = message.fadeOutAt ?: message.fadeInAt,
+                fadeOutMs = message.fadeOutMs ?: DEFAULT_TEXT_PATTERN_FADE_MS,
+            )
+        } else {
+            // 배경 셀 - 애니메이션 없이 즉시 고정
+            TextPatternAnimator.stop()
+            patternView.setBackgroundColor(color)
+            patternView.alpha = 1f
+        }
+    }
+
+    private fun handleTextPatternStop() {
+        TextPatternAnimator.stop()
+        Log.d(PATTERN_TAG, "텍스트 패턴 정지: 마지막 상태 유지")
+    }
+
     // 현재 패턴 모드일 때만 처리한다. startAt까지 대기한 뒤에도 여전히 패턴 모드인지 다시 확인한다
     // (대기하는 동안 MODE_VIDEO로 바뀌었을 수 있기 때문).
     private fun handlePatternStart(message: MqttControlMessage.PatternStart) {
@@ -515,6 +563,7 @@ class MainActivity : ComponentActivity() {
                 Log.e(PATTERN_TAG, "색상 파싱 실패 - ${message.color}", e)
                 return@launch
             }
+            TextPatternAnimator.stop()
             PatternAnimator.startBlink(color, message.interval, message.duration)
         }
     }
@@ -553,6 +602,7 @@ class MainActivity : ComponentActivity() {
                 Log.e(PATTERN_TAG, "색상 파싱 실패 - ${message.color}", e)
                 return@launch
             }
+            TextPatternAnimator.stop()
             PatternAnimator.startBlink(color, message.interval, message.duration)
             Log.d(PATTERN_TAG, "순차 점멸 시작 - deviceId=$deviceId, myStartAt=$myStartAt")
         }

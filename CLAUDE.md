@@ -7,9 +7,10 @@
 미디어 설치 시스템.
 
 ## 현재 개발 단계
-Phase 3 진행 중:
+Phase 3 구현 완료 (텍스트 패턴까지):
 - 15대 분할 재생 + 키오스크 연동 클라이언트 시연 완료
-- 다음: 100대 확장 + 텍스트 스크롤 + 텍스트 패턴 구현
+- 100대 확장, 텍스트 스크롤, 텍스트 패턴 구현 완료 (실기기 대규모 검증은 진행 중)
+- 다음: Phase 4 (모니터링 대시보드 확장 + 439대 배포 + 역변환 보정 + 외주 인터랙션 연동)
 
 ## 아키텍처
 - 타임코드: UDP 멀티캐스트 239.0.0.1:5000 (30fps)
@@ -112,7 +113,8 @@ MediaSphere/
 
 ## MQTT 토픽 구조
 - wall/control     : 서버 → 전체
-- wall/device/{id} : 서버 → 개별
+- wall/device/{id} : 서버 → 개별 (retain, config.json 배포)
+- wall/pattern/{id}: 서버 → 개별 (non-retain, 텍스트 패턴 셀 색상/애니메이션)
 - wall/status/{id} : 폰 → 서버 (heartbeat, 5초마다)
 - wall/ready/{id}  : 폰 → 서버 (다운로드 완료)
 - wall/error/{id}  : 폰 → 서버 (오류)
@@ -146,23 +148,33 @@ MediaSphere/
 - COLOR_CLEAR  : {"type":"COLOR_CLEAR","startAt":밀리초}
                  컬러 오버레이 즉시 제거
 
-### 텍스트 스크롤 (신규 - 미구현)
-- TEXT_SCROLL  : {"type":"TEXT_SCROLL","text":"Hello",
+### 텍스트 스크롤
+- TEXT_SCROLL  : {"type":"TEXT_SCROLL","text":"Hello\n2줄도 가능",
+                  "font":"sans-serif","fontSize":120,
                   "color":"#FFFFFF","bgColor":"#000000",
-                  "speed":1.0,"direction":"horizontal",
+                  "align":"center","direction":"left","speed":200,
+                  "rowCounts":[20,20,20,20,20],"totalRows":5,
                   "startAt":밀리초}
-                 서버가 각 폰의 구체 위치(위도/경도)를 기반으로
-                 폰별로 다른 startDelay를 계산해 개별 발행.
-                 텍스트가 구체 표면을 따라 흐르는 효과.
+                 전체 방송(wall/control) - 파라미터만 한 번 방송하고 각 폰이
+                 자기 row/col(config.json)로 전체 캔버스 중 자기 몫을 로컬 렌더링.
+                 rowCounts는 서버가 manifest에서 매번 계산해서 함께 실어 보낸다.
 - TEXT_STOP    : {"type":"TEXT_STOP"}
 
-### 텍스트 패턴 (신규 - 미구현)
-- TEXT_PATTERN : {"type":"TEXT_PATTERN","text":"Hi",
-                  "color":"#FFFFFF","bgColor":"#000000",
-                  "startAt":밀리초}
-                 폰들을 픽셀 삼아 텍스트를 구체 표면에 표시.
-                 서버가 각 폰이 텍스트의 어느 픽셀에 해당하는지
-                 계산하여 색(전경/배경)을 개별 발행.
+### 텍스트 패턴
+폰 배치 자체를 픽셀로 써서 짧은 텍스트를 표시(현재 100대 평면 5행 그리드 기준,
+초소형 3x5 도트매트릭스 폰트). COLOR_CHANGE와 달리 전체 방송이 아니라 폰마다
+다른 색을 wall/pattern/{deviceId}로 개별 발행한다.
+- TEXT_PATTERN_CELL (wall/pattern/{deviceId}, non-retain):
+  전경(글자) 셀: {"type":"TEXT_PATTERN_CELL","color":"#RRGGBB",
+                  "fadeInAt":밀리초,"fadeInMs":400,
+                  "fadeOutAt":밀리초,"fadeOutMs":400}
+  배경 셀:      {"type":"TEXT_PATTERN_CELL","color":"#RRGGBB"}
+                 글자별로 fadeInAt에 시차(charStaggerMs)를 둬서 한 글자씩 순차
+                 페이드인하고, 모든 글자가 다 켜진 뒤 공유하는 fadeOutAt에 전부
+                 동시 페이드아웃한다. PATTERN_START와 같은 원리로 이 절대시각
+                 두 개까지만 TimeSyncManager로 대기하고 그 뒤론 로컬 애니메이션.
+- TEXT_PATTERN_STOP (wall/control, non-retain): {"type":"TEXT_PATTERN_STOP"}
+                 진행 중인 페이드 취소 (마지막 상태 유지, PATTERN_STOP과 동일 관례)
 
 ## HTTP API 엔드포인트
 - POST /api/play
@@ -173,8 +185,12 @@ MediaSphere/
 - POST /api/pattern/stop
 - POST /api/color-change   {"stress":0.0~1.0,"color":"#RRGGBB","leadTime":2000}
 - POST /api/color-clear
-- POST /api/text-scroll    {"text":"Hello","color":"#FFFFFF","speed":1.0} (미구현)
-- POST /api/text-pattern   {"text":"Hi","color":"#FFFFFF"} (미구현)
+- POST /api/text/config    {"text","font","fontSize","color","bgColor","align","direction","speed"} (저장만, 발행 안 함)
+- POST /api/text/start
+- POST /api/text/stop
+- POST /api/text-pattern/config {"text","fgColor","bgColor","charStaggerMs","fadeInMs","holdMs","fadeOutMs"} (저장만, 발행 안 함)
+- POST /api/text-pattern/start
+- POST /api/text-pattern/stop
 
 ## config.json 위치 (폰 내부)
 /sdcard/mediasphere/config.json
@@ -214,15 +230,18 @@ MediaSphere/
               [x] tiles.json 생성 (4K 원본 기준, 확대율 9.0배로 15대와 유사)
               [x] 4K 원본 영상으로 실제 slice_video.py 실행
              네트워크/동기화 안정성 재검증
-        [ ] 텍스트 스크롤 (신규)
-              서버 대시보드에서 텍스트 입력 → 구체 표면을 텍스트가 흐름
-              각 폰의 위도/경도 기반으로 서버가 startDelay 계산
-              wall/device/{id}로 개별 발행
-        [ ] 텍스트 패턴 (신규)
-              "Hi" 같은 짧은 텍스트를 폰 전체를 픽셀로 사용해 표시
-              패턴 모드 내 기능으로 구현
-        [ ] 역변환 보정 (우선순위 낮음 - 육안 차이 확인 후 판단)
-- [ ] Phase 4: 모니터링 대시보드 + 439대
+        [x] 텍스트 스크롤
+              서버 대시보드에서 텍스트 입력 → 100대 평면 그리드를 텍스트가 흐름
+              전체 방송(파라미터만) + 각 폰이 자기 row/col로 로컬 렌더링
+              (구체는 위도별 폭이 달라 범위 밖 - CLAUDE.md 설계 노트 참고)
+        [x] 텍스트 패턴 (Phase 3 마지막 항목)
+              "Hi" 같은 짧은 텍스트를 폰 배치 자체를 픽셀로 사용해 표시
+              패턴 모드 내 기능, wall/pattern/{id}로 폰별 개별 발행
+- [ ] Phase 4: 모니터링 대시보드 + 439대 + 역변환 보정 + 외주 연동
+        [ ] 역변환 보정 (v360, 등장방형 투영 - 육안 차이 확인 후 판단)
+        [ ] 외주 개발사와의 인터랙션 연동 (키오스크 대체 방식 확정 후 진행)
+        [ ] 모니터링 대시보드 확장
+        [ ] 439대 규모 배포
 
 ## 클라이언트 요구사항
 - 점멸 패턴: 패턴 모드에서 화면 점멸 ✅
@@ -261,11 +280,28 @@ MediaSphere/
     gen_tiles.py의 sphere 브랜치에도 flat과 동일하게 tiles.json에 저장하면 됨.
     이번 라운드는 평면만 구현, 구체는 gap:{x:0,y:0}으로 남겨둠.
 
-### 텍스트 패턴 구현 방향
-- 구체 표면의 폰 배치를 픽셀 그리드로 취급
-- 서버가 텍스트 비트맵을 렌더링하고 각 폰 위치와 매핑
-- 전경색 폰 → COLOR_CHANGE, 배경색 폰 → 다른 COLOR_CHANGE 개별 발행
-- 폰 해상도(1대)가 아닌 폰 배치 자체를 픽셀로 사용
+### 텍스트 패턴 구현 방향 (평면 100대 구현 완료, 2026-08)
+- 처음 설계 노트는 "전경/배경 폰에 COLOR_CHANGE를 개별 발행"이었으나, 코드 확인 결과
+  COLOR_CHANGE는 (1) wall/control 전체 방송이라 폰마다 다른 색을 못 보내고, (2) Android
+  쪽에서 1초 주기 10회 깜빡이다 자동 소멸하는 애니메이션이 걸려있어(키오스크 스트레스
+  연출용) 고정 표시가 필요한 픽셀아트와 맞지 않음 - 그대로 재사용하지 않고 새로 만듦.
+- 폰별 개별 발행용 신규 토픽 `wall/pattern/{deviceId}`(non-retain) 추가 -
+  `wall/device/{id}`는 이미 config.json 스키마로 쓰고 있어 겹치지 않게 분리.
+- 비트맵 폰트: 100대 그리드가 5행이라 일반 폰트는 이 해상도에서 못 읽는다 - 외부
+  캔버스/폰트 라이브러리 없이 3폭 x 5행 도트매트릭스 글리프를 직접 하드코딩
+  (`server/lib/textPatternFont.js`, A-Z/0-9/기본 문장부호). 대소문자 구분 없음.
+- 배치: `server/lib/textPatternGrid.js`가 문자열을 글리프로 그리드 좌표계에 가운데
+  정렬 배치하고, `grid[row][col] = 글자 인덱스 또는 -1(배경)`을 반환한다. 서버가
+  manifest의 각 폰 row/col과 대조해서 전경/배경을 판정 후 개별 발행한다.
+- 시각 효과: 글자가 하나씩 순차로 페이드인(charStaggerMs 간격) → 모두 켜지면 유지
+  (holdMs) → 전체가 동시에 페이드아웃. 배경 셀은 애니메이션 없이 즉시 고정.
+- 동기화: 텍스트 스크롤(매 프레임 재계산)과 달리 이건 길이가 정해진 1회성 애니메이션이라
+  더 가벼운 방식을 쓴다 - PATTERN_START와 동일하게, 폰은 서버가 계산한 절대시각
+  (fadeInAt, fadeOutAt) 두 개까지만 `TimeSyncManager.now()`로 대기하고 그 사이는
+  로컬 ValueAnimator로 돈다(`android/.../pattern/TextPatternAnimator.kt`). 이 방식은
+  텍스트 스크롤에서 겪은 TimeSync 재동기화발 점프/드리프트 문제 자체가 애초에 없다.
+- 구체는 이번 라운드 범위 밖 - 폰 배치 자체를 픽셀로 쓰는 방식이라 텍스트 스크롤보다
+  오히려 구체 확장이 자연스러울 수 있음(위도/경도 격자를 그대로 픽셀 그리드로) - 추후 검토.
 
 ## 주의사항
 - WifiManager.MulticastLock 없으면 UDP 수신 안 됨

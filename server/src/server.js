@@ -11,6 +11,7 @@ const express = require('express');
 const mqtt = require('mqtt');
 const { WebSocketServer, WebSocket } = require('ws');
 const { stressToColor } = require('../lib/stressColor');
+const { computeTextPatternGrid } = require('../lib/textPatternGrid');
 
 // ── 설정값 ──────────────────────────────────────────
 const MULTICAST_ADDR = '239.0.0.1';
@@ -25,6 +26,7 @@ const MQTT_STATUS_TOPIC_FILTER = 'wall/status/+';
 const MQTT_READY_TOPIC_FILTER = 'wall/ready/+';
 const MQTT_ERROR_TOPIC_FILTER = 'wall/error/+';
 const MQTT_DEVICE_TOPIC_PREFIX = 'wall/device/';
+const MQTT_PATTERN_CELL_TOPIC_PREFIX = 'wall/pattern/';
 const MQTT_OTA_TOPIC = 'wall/ota';
 const MQTT_OTA_STATUS_TOPIC_FILTER = 'wall/ota/status/+';
 const DEFAULT_OTA_STEP_DELAY_MS = 200; // 롤링 배포 - 폰마다 (deviceId-1)*stepDelayMs 만큼 시차를 둔다
@@ -33,6 +35,8 @@ const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline �
 const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
 const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
+const TEXT_PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-pattern-config.json');
+const DEFAULT_TEXT_PATTERN_LEAD_TIME_MS = 3000; // 텍스트 스크롤과 동일 - 439대가 명령을 다 받을 시간 여유
 // "video"/"pattern"만 받던 /api/mode를 "text"까지 세 값으로 확장하면서, 매핑을 한 곳에 모아둔다.
 const MODE_MQTT_TYPES = { video: 'MODE_VIDEO', pattern: 'MODE_PATTERN', text: 'MODE_TEXT' };
 const DEFAULT_TEXT_LEAD_TIME_MS = 3000; // 439대가 명령을 다 받을 시간 여유 - OTA와 비슷한 이유로 컬러보다 넉넉히
@@ -86,6 +90,15 @@ const state = {
     align: 'center', // left | center | right
     direction: 'left', // left | right | up | down
     speed: 200, // px/sec
+  },
+  textPatternConfig: {
+    text: 'Hi',
+    fgColor: '#FFFFFF',
+    bgColor: '#000000',
+    charStaggerMs: 400, // 글자 하나가 페이드인을 시작하고 다음 글자가 시작하기까지의 간격
+    fadeInMs: 400,
+    holdMs: 3000, // 모든 글자가 다 켜진 뒤 유지하는 시간
+    fadeOutMs: 400,
   },
   // 키오스크 스트레스 컬러 오버레이의 현재 상태. null이면 오버레이 없음(초기화된 상태).
   currentColor: {
@@ -144,6 +157,31 @@ function loadTextScrollConfig() {
 }
 
 loadTextScrollConfig();
+
+// textPatternConfig를 text-pattern-config.json에 저장한다 (POST /api/text-pattern/config 호출 시마다).
+function saveTextPatternConfig() {
+  try {
+    fs.mkdirSync(path.dirname(TEXT_PATTERN_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEXT_PATTERN_CONFIG_PATH, JSON.stringify(state.textPatternConfig, null, 2));
+  } catch (err) {
+    console.error('[HTTP] text-pattern-config.json 저장 실패:', err.message);
+  }
+}
+
+// 서버 시작 시 저장된 textPatternConfig가 있으면 불러온다 (loadTextScrollConfig와 동일 패턴).
+function loadTextPatternConfig() {
+  if (!fs.existsSync(TEXT_PATTERN_CONFIG_PATH)) return;
+
+  try {
+    const loaded = JSON.parse(fs.readFileSync(TEXT_PATTERN_CONFIG_PATH));
+    state.textPatternConfig = { ...state.textPatternConfig, ...loaded };
+    console.log(`[HTTP] text-pattern-config.json 로드 완료 - ${JSON.stringify(state.textPatternConfig)}`);
+  } catch (err) {
+    console.error('[HTTP] text-pattern-config.json 파싱 실패 - 기본값 유지:', err.message);
+  }
+}
+
+loadTextPatternConfig();
 
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
@@ -639,6 +677,86 @@ app.post('/api/text/stop', (req, res) => {
   res.json({ ok: true });
 });
 
+// 텍스트 패턴 설정 저장 (발행하지 않음 - /api/text-pattern/start 시점에 이 값을 사용한다)
+app.post('/api/text-pattern/config', (req, res) => {
+  const { text, fgColor, bgColor, charStaggerMs, fadeInMs, holdMs, fadeOutMs } = req.body;
+  if (text !== undefined) state.textPatternConfig.text = text;
+  if (fgColor !== undefined) state.textPatternConfig.fgColor = fgColor;
+  if (bgColor !== undefined) state.textPatternConfig.bgColor = bgColor;
+  if (charStaggerMs !== undefined) state.textPatternConfig.charStaggerMs = charStaggerMs;
+  if (fadeInMs !== undefined) state.textPatternConfig.fadeInMs = fadeInMs;
+  if (holdMs !== undefined) state.textPatternConfig.holdMs = holdMs;
+  if (fadeOutMs !== undefined) state.textPatternConfig.fadeOutMs = fadeOutMs;
+  saveTextPatternConfig();
+
+  console.log(`[HTTP] 텍스트 패턴 설정 저장 - ${JSON.stringify(state.textPatternConfig)}`);
+  res.json({ success: true, textPatternConfig: state.textPatternConfig });
+});
+
+// 텍스트 패턴 시작 - manifest의 row/col을 비트맵과 대조해 폰별로 다른 색을
+// wall/pattern/{deviceId}에 개별 발행한다(COLOR_CHANGE와 달리 전체 방송이 아니라 폰마다 다름).
+// 전경(글자) 셀은 charIndex별로 시차를 둔 fadeInAt과, 모든 글자가 다 켜진 뒤 공유하는
+// fadeOutAt을 함께 보낸다 - 폰은 이 절대 시각 두 개만으로 로컬 애니메이션을 돌린다.
+app.post('/api/text-pattern/start', (req, res) => {
+  if (!manifest) {
+    res.status(400).json({
+      ok: false,
+      error: 'manifest가 없습니다 - deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.',
+    });
+    return;
+  }
+
+  const rowCounts = computeRowCounts();
+  if (!rowCounts) {
+    res.status(400).json({ ok: false, error: 'devices[].meta.row 정보가 없습니다.' });
+    return;
+  }
+  const gridCols = Math.max(...rowCounts);
+  const totalRows = rowCounts.length;
+
+  const cfg = state.textPatternConfig;
+  const { grid, numChars } = computeTextPatternGrid(cfg.text, gridCols, totalRows);
+
+  const baseStartAt = Date.now() + DEFAULT_TEXT_PATTERN_LEAD_TIME_MS;
+  const fadeOutAt = baseStartAt + Math.max(0, numChars - 1) * cfg.charStaggerMs + cfg.fadeInMs + cfg.holdMs;
+
+  let count = 0;
+  for (const device of manifest.devices) {
+    const row = device.meta && device.meta.row;
+    const col = device.meta && device.meta.col;
+    if (row === undefined || row === null || col === undefined || col === null) continue;
+
+    const charIndex = grid[row] !== undefined ? grid[row][col] : -1;
+    const topic = `${MQTT_PATTERN_CELL_TOPIC_PREFIX}${device.deviceId}`;
+
+    const payload = charIndex >= 0
+      ? {
+        type: 'TEXT_PATTERN_CELL',
+        color: cfg.fgColor,
+        fadeInAt: baseStartAt + charIndex * cfg.charStaggerMs,
+        fadeInMs: cfg.fadeInMs,
+        fadeOutAt,
+        fadeOutMs: cfg.fadeOutMs,
+      }
+      : { type: 'TEXT_PATTERN_CELL', color: cfg.bgColor };
+
+    mqttClient.publish(topic, JSON.stringify(payload), { retain: false, qos: 1 }, (err) => {
+      if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
+    });
+    count += 1;
+  }
+
+  console.log(`[HTTP] 텍스트 패턴 시작 - text="${cfg.text}" 대상 ${count}대, fadeOutAt=${fadeOutAt}`);
+  res.json({ ok: true, text: cfg.text, targets: count, baseStartAt, fadeOutAt });
+});
+
+app.post('/api/text-pattern/stop', (req, res) => {
+  publishControl({ type: 'TEXT_PATTERN_STOP' }, { retain: false });
+
+  console.log('[HTTP] 텍스트 패턴 정지');
+  res.json({ ok: true });
+});
+
 // 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
 // totalDevices는 현재 online 상태인 기기 수만 센다.
 app.post('/api/sequence/start', (req, res) => {
@@ -937,6 +1055,7 @@ function buildStatusPayload() {
     currentMode: state.currentMode,
     patternConfig: state.patternConfig,
     textScrollConfig: state.textScrollConfig,
+    textPatternConfig: state.textPatternConfig,
     currentColor: state.currentColor,
   };
 

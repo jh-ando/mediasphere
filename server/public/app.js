@@ -40,6 +40,17 @@ const textSpeedEl = document.getElementById('text-speed');
 const btnTextStart = document.getElementById('btn-text-start');
 const btnTextStop = document.getElementById('btn-text-stop');
 
+const textPatternControlsEl = document.getElementById('text-pattern-controls');
+const textPatternContentEl = document.getElementById('text-pattern-content');
+const textPatternFgColorEl = document.getElementById('text-pattern-fg-color');
+const textPatternBgColorEl = document.getElementById('text-pattern-bg-color');
+const textPatternCharStaggerEl = document.getElementById('text-pattern-char-stagger');
+const textPatternFadeInEl = document.getElementById('text-pattern-fade-in');
+const textPatternHoldEl = document.getElementById('text-pattern-hold');
+const textPatternFadeOutEl = document.getElementById('text-pattern-fade-out');
+const btnTextPatternStart = document.getElementById('btn-text-pattern-start');
+const btnTextPatternStop = document.getElementById('btn-text-pattern-stop');
+
 const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
@@ -47,6 +58,7 @@ const btnRestartAll = document.getElementById('btn-restart-all');
 // 패턴/텍스트 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
 let editingTextConfig = false;
+let editingTextPatternConfig = false;
 
 // 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
@@ -157,6 +169,16 @@ function applyStatusUpdate(data) {
     textDirectionEl.value = data.textScrollConfig.direction;
     textSpeedEl.value = data.textScrollConfig.speed;
   }
+
+  if (data.textPatternConfig && !editingTextPatternConfig) {
+    textPatternContentEl.value = data.textPatternConfig.text;
+    textPatternFgColorEl.value = data.textPatternConfig.fgColor;
+    textPatternBgColorEl.value = data.textPatternConfig.bgColor;
+    textPatternCharStaggerEl.value = data.textPatternConfig.charStaggerMs;
+    textPatternFadeInEl.value = data.textPatternConfig.fadeInMs;
+    textPatternHoldEl.value = data.textPatternConfig.holdMs;
+    textPatternFadeOutEl.value = data.textPatternConfig.fadeOutMs;
+  }
 }
 
 // 모드 토글 강조 표시 + 영상/패턴/텍스트 컨트롤 활성화 상태를 함께 갱신한다.
@@ -182,6 +204,13 @@ function setModeUi(mode) {
   btnSequencePlay.disabled = !isPattern;
   btnSequenceStop.disabled = !isPattern;
   patternControlsEl.classList.toggle('disabled', !isPattern);
+
+  [textPatternContentEl, textPatternFgColorEl, textPatternBgColorEl, textPatternCharStaggerEl,
+    textPatternFadeInEl, textPatternHoldEl, textPatternFadeOutEl,
+    btnTextPatternStart, btnTextPatternStop].forEach((el) => {
+    el.disabled = !isPattern;
+  });
+  textPatternControlsEl.classList.toggle('disabled', !isPattern);
 
   [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
     textAlignEl, textDirectionEl, textSpeedEl, btnTextStart, btnTextStop].forEach((el) => {
@@ -218,6 +247,18 @@ function sendTextConfig() {
     direction: textDirectionEl.value,
     speed: Number(textSpeedEl.value),
   }).catch((err) => console.error('[HTTP] 텍스트 설정 저장 실패', err));
+}
+
+function sendTextPatternConfig() {
+  postJson('/api/text-pattern/config', {
+    text: textPatternContentEl.value,
+    fgColor: textPatternFgColorEl.value,
+    bgColor: textPatternBgColorEl.value,
+    charStaggerMs: Number(textPatternCharStaggerEl.value),
+    fadeInMs: Number(textPatternFadeInEl.value),
+    holdMs: Number(textPatternHoldEl.value),
+    fadeOutMs: Number(textPatternFadeOutEl.value),
+  }).catch((err) => console.error('[HTTP] 텍스트 패턴 설정 저장 실패', err));
 }
 
 function formatTimecode(ms) {
@@ -298,6 +339,25 @@ btnTextStart.addEventListener('click', () => {
 
 btnTextStop.addEventListener('click', () => {
   fetch('/api/text/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 정지 요청 실패', err));
+});
+
+[textPatternContentEl, textPatternFgColorEl, textPatternBgColorEl, textPatternCharStaggerEl,
+  textPatternFadeInEl, textPatternHoldEl, textPatternFadeOutEl].forEach((el) => {
+  el.addEventListener('focus', () => {
+    editingTextPatternConfig = true;
+  });
+  el.addEventListener('blur', () => {
+    editingTextPatternConfig = false;
+  });
+  el.addEventListener('change', sendTextPatternConfig);
+});
+
+btnTextPatternStart.addEventListener('click', () => {
+  fetch('/api/text-pattern/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 패턴 시작 요청 실패', err));
+});
+
+btnTextPatternStop.addEventListener('click', () => {
+  fetch('/api/text-pattern/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 패턴 정지 요청 실패', err));
 });
 
 btnPatternPlay.addEventListener('click', () => {
