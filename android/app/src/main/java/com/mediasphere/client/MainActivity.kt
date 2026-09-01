@@ -762,10 +762,22 @@ class MainActivity : ComponentActivity() {
     }
 
     // wall/device/{deviceId}(retain)로 새 config를 받았을 때 - 배정된 영상 파일을 동기화한다.
-    // retain 특성상 재접속/재부팅마다 같은 내용이 다시 올 수 있으므로, syncVideoFile 안에서
-    // 파일이 이미 있고 체크섬도 기대값과 같으면 재다운로드 없이 그대로 보고한다 (멱등).
+    // retain 특성상 재접속마다 같은 내용이 다시 오고, 게다가 서버가 qos:1로 발행하기 때문에
+    // MQTT 스펙상("적어도 한 번" 전달) 신호가 불안정한 폰은 완전히 동일한 메시지를 짧은
+    // 간격으로 중복 수신할 수 있다(재전송 - 버그가 아니라 QoS 1의 정상 동작). syncVideoFile
+    // 안에서도 체크섬이 같으면 재다운로드는 안 하지만, 그것만으로는 매번 영상 파일 전체를
+    // 다시 해싱하는 비용은 못 피한다 - 그래서 여기서 직전과 완전히 동일한 내용이면 아예
+    // syncVideoFile 호출 자체를 건너뛴다(실기기에서 특정 폰 몇 대가 몇 초 간격으로 같은
+    // 체크섬을 계속 재발행하는 현상 확인 후 추가).
     private fun handleDeviceConfig(message: MqttControlMessage.DeviceConfig) {
+        val previous = lastDeviceConfig
         lastDeviceConfig = message
+        if (previous != null && previous.videoPath == message.videoPath &&
+            previous.currentVideo == message.currentVideo && previous.checksum == message.checksum
+        ) {
+            Log.d(SYNC_TAG, "중복 config 수신(내용 동일) - 재검증 스킵")
+            return
+        }
         syncVideoFile(message.videoPath, message.currentVideo, message.checksum)
     }
 
