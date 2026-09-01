@@ -121,6 +121,26 @@ def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin):
         lon_step = 360.0 / count
         lon_off = (lon_step / 2.0) if (stagger and ri % 2) else 0.0
 
+        # gap_lon: 그 행의 경도 간격(lon_step) 대비 폰이 실제로 차지하는 경도 폭(d_lon)
+        # 비율 - 텍스트 스크롤이 폰 사이 여백까지 감안해서 흐르게 하는 데 쓴다(flat의
+        # gapRatioX와 동일한 개념, 행마다 값이 다름).
+        gap_lon = max(0.0, 1.0 - d_lon / lon_step)
+
+        # gap_lat: 이 행에 배정된 세로 각도 폭(위아래 이웃 행과의 거리) 대비 d_lat 비율.
+        # 중간 행은 위/아래 이웃까지 거리의 평균(각자 절반씩 배정받는다고 봄), 맨 위/맨
+        # 아래 행은 이웃이 한쪽밖에 없어 그 거리를 그대로 씀(위/아래로 똑같이 공간이
+        # 있다고 가정하는 근사치 - 실제로 그쪽엔 폰이 없는 빈 공간이 더 있을 수 있지만,
+        # 그 구간은 어차피 표시 대상이 아니라 근사로 처리해도 무방하다고 판단).
+        if len(rows_spec) == 1:
+            lat_spacing = d_lat  # 행이 하나뿐이면 비교 대상이 없음 - gap 0으로 취급
+        elif ri == 0:
+            lat_spacing = rows_spec[0][0] - rows_spec[1][0]
+        elif ri == len(rows_spec) - 1:
+            lat_spacing = rows_spec[ri - 1][0] - rows_spec[ri][0]
+        else:
+            lat_spacing = (rows_spec[ri - 1][0] - rows_spec[ri + 1][0]) / 2.0
+        gap_lat = max(0.0, 1.0 - d_lat / lat_spacing) if lat_spacing > 0 else 0.0
+
         for i in range(count):
             n += 1
             lon = (lon_step * i + lon_off) % 360.0
@@ -143,6 +163,10 @@ def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin):
                     "lon": round(lon, 4),
                     "d_lat": round(d_lat, 4),
                     "d_lon": round(d_lon, 4),
+                    # config.json에서 최종적으로 쓰일 이름과 그대로 맞춰서 저장 -
+                    # gen_configs.py는 이 값을 복사만 하면 된다.
+                    "gapRatioX": round(gap_lon, 4),
+                    "gapRatioY": round(gap_lat, 4),
                 },
             })
     return tiles

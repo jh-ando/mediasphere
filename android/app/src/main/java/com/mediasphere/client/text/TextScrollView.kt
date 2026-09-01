@@ -34,11 +34,19 @@ import kotlin.math.roundToLong
  * 큰 변화(OFFSET_SNAP_THRESHOLD_MS 초과 - 수동 시각 변경 등)만 즉시 반영한다. 재동기화로
  * 인한 순간 점프도 없고, 하드웨어 시계 편차로 인한 지속적 어긋남도 계속 보정된다.
  *
- * 전체 그리드(모든 row x col)를 하나의 큰 캔버스로 보고, 텍스트 블록을 그 위에 "한 번만"
- * 배치한 뒤 각 폰이 자기 row/col 오프셋만큼 잘라서 보여준다 - 행마다 반복해서 그리는 게
- * 아니라, 여러 폰에 걸쳐 하나로 이어진 한 덩어리가 흐르는 것처럼 보이게 하기 위함이다.
- * (100대 균일 그리드 전제 - 구체처럼 행마다 폭이 다르면 "같은 열"이 물리적으로 다른 위치를
- * 의미하게 되므로 별도 설계 필요).
+ * 전체 그리드를 하나의 큰 캔버스로 보고, 텍스트 블록을 그 위에 "한 번만" 배치한 뒤 각 폰이
+ * 자기 몫만 잘라서 보여준다 - 행마다 반복해서 그리는 게 아니라, 여러 폰에 걸쳐 하나로 이어진
+ * 한 덩어리가 흐르는 것처럼 보이게 하기 위함이다.
+ *
+ * 가로 위치 계산은 flat/sphere가 서로 달라 config의 lon 유무로 분기한다(myLon이 null이면
+ * flat, 값이 있으면 sphere):
+ *   - flat: myCol(열 인덱스) / gridCols(행 최대 열 수) - 100대처럼 모든 행의 대수가 같은
+ *     균일 격자를 전제로 한다.
+ *   - sphere: myLon(경도, 0~360도) / 360도 - 439대는 위도별로 9~50대까지 행마다 대수가
+ *     달라서 "열 인덱스"라는 개념 자체가 성립하지 않는다(20대짜리 행의 5번째와 50대짜리
+ *     행의 5번째는 실제 각도가 전혀 다름). 대신 연속된 경도 비율을 쓰면 행 대수와
+ *     무관하게 항상 같은 각도 기준으로 정렬된다. 세로(위도/row)는 439대 배치가 위도
+ *     간격 12.857도로 균일해서 flat과 같은 방식(myRow/totalRows)을 그대로 쓴다.
  *
  * gapRatioX/gapRatioY: 폰 화면(width/height)은 실제 물리적 간격(피치)보다 작다 -
  * 베젤+거치대 때문에 폰 사이에 화면이 아닌 빈 공간이 있다(gen_tiles.py --pitch 실측
@@ -68,6 +76,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val startAt: Long,
         val myRow: Int,
         val myCol: Int,
+        val myLon: Double?,
         val gapRatioX: Double,
         val gapRatioY: Double,
     )
@@ -101,6 +110,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         startAt: Long,
         myRow: Int,
         myCol: Int,
+        myLon: Double? = null,
         gapRatioX: Double = 0.0,
         gapRatioY: Double = 0.0,
     ) {
@@ -123,6 +133,8 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             // row/col을 못 받은 폰(sphere 등)은 0으로 취급 - 자기 몫 계산이 틀어질 뿐 크래시는 안 남
             myRow = myRow.coerceAtLeast(0),
             myCol = myCol.coerceAtLeast(0),
+            // null이면 flat(myCol 기반), 값이 있으면 sphere(경도 기반) - onDraw()에서 분기
+            myLon = myLon,
             // 0.9 상한 - 혹시 잘못된 값이 와도 pitch가 폭발적으로 커지는 걸 막는 안전장치
             gapRatioX = gapRatioX.coerceIn(0.0, 0.9),
             gapRatioY = gapRatioY.coerceIn(0.0, 0.9),
@@ -209,11 +221,18 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             originX = (gridWidthPx - blockWidth) / 2f
         }
 
-        // 캔버스 좌표에서 내 폰의 row/col 오프셋(pitch 기준)만큼 빼면, 캔버스 중 내가
-        // 맡은 조각만 화면 안에 들어오고 나머지는 Canvas가 알아서 잘라낸다. 내 화면은
-        // 자기 pitch 칸 안에서 가운데 정렬돼 있다고 본다(gen_tiles.py가 crop을 pitch
-        // 칸 중앙에 놓는 것과 동일한 규칙) - 그래서 (pitch - 화면크기)/2 만큼 더 뺀다.
-        val localOriginX = originX - (p.myCol * pitchW) - (pitchW - width) / 2f
+        // 캔버스 좌표에서 내 폰의 오프셋(pitch 기준)만큼 빼면, 캔버스 중 내가 맡은 조각만
+        // 화면 안에 들어오고 나머지는 Canvas가 알아서 잘라낸다. 내 화면은 자기 pitch 칸
+        // 안에서 가운데 정렬돼 있다고 본다(gen_tiles.py가 crop을 pitch 칸 중앙에 놓는 것과
+        // 동일한 규칙) - 그래서 (pitch - 화면크기)/2 만큼 더 뺀다.
+        //
+        // 가로축만 flat(myCol)/sphere(myLon) 분기 - 클래스 상단 주석 참고. 세로축은 위도
+        // 간격이 균일해서 flat과 동일하게 myRow 기반으로 계산한다.
+        val localOriginX = if (p.myLon != null) {
+            originX - ((p.myLon / 360.0) * gridWidthPx).toFloat()
+        } else {
+            originX - (p.myCol * pitchW) - (pitchW - width) / 2f
+        }
         val localOriginY = originY - (p.myRow * pitchH) - (pitchH - height) / 2f
 
         p.lines.forEachIndexed { i, line ->

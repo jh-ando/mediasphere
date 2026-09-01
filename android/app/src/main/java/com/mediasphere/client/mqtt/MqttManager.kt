@@ -127,6 +127,9 @@ sealed class MqttControlMessage {
     // (없으면 null - 옛 manifest이거나 gen_manifest.py --skip-checksum인 경우).
     // row/col: 텍스트 스크롤에서 "나는 전체 배너 중 어디를 보여줘야 하는지" 계산하는 데 쓴다
     // (없으면 null - sphere 등 row/col 개념이 없는 레이아웃이거나 옛 config인 경우).
+    // lat/lon: sphere 전용 위치 정보 - flat의 row/col과 같은 역할을 하되, 균일 격자가
+    // 아닌 구체에서는 열 인덱스 대신 연속된 경도(lon)로 가로 위치를 계산한다
+    // (TextScrollView.kt가 lon 유무로 flat/sphere를 분기).
     // gapRatioX/gapRatioY: 폰 화면 크기 대비 실제 물리 간격(피치) 비율 - 텍스트 스크롤이
     // 폰 사이 여백까지 감안해서 흐르게 하는 데 쓴다(없거나 0이면 간격 없음으로 취급).
     data class DeviceConfig(
@@ -135,6 +138,8 @@ sealed class MqttControlMessage {
         val checksum: String?,
         val row: Int?,
         val col: Int?,
+        val lat: Double?,
+        val lon: Double?,
         val gapRatioX: Double?,
         val gapRatioY: Double?,
     ) : MqttControlMessage()
@@ -438,6 +443,8 @@ class MqttManager(
                 checksum = if (json.has("checksum")) json.getString("checksum") else null,
                 row = if (json.has("row")) json.getInt("row") else null,
                 col = if (json.has("col")) json.getInt("col") else null,
+                lat = if (json.has("lat")) json.getDouble("lat") else null,
+                lon = if (json.has("lon")) json.getDouble("lon") else null,
                 gapRatioX = if (json.has("gapRatioX")) json.getDouble("gapRatioX") else null,
                 gapRatioY = if (json.has("gapRatioY")) json.getDouble("gapRatioY") else null,
             )

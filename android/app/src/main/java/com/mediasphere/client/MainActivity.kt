@@ -487,10 +487,13 @@ class MainActivity : ComponentActivity() {
             startAt = message.startAt,
             myRow = config?.row ?: 0,
             myCol = config?.col ?: 0,
+            // null로 그대로 넘긴다(0.0으로 기본값 주지 않음) - TextScrollView가 이 null
+            // 여부로 flat/sphere를 구분하므로, 여기서 defaulting하면 그 신호가 사라진다.
+            myLon = config?.lon,
             gapRatioX = config?.gapRatioX ?: 0.0,
             gapRatioY = config?.gapRatioY ?: 0.0,
         )
-        Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col} "
+        Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col} lat=${config?.lat} lon=${config?.lon} "
             + "gapRatioX=${config?.gapRatioX} gapRatioY=${config?.gapRatioY}")
     }
 
