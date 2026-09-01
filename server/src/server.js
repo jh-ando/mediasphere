@@ -254,6 +254,24 @@ function computeRowCounts() {
   return rowCounts;
 }
 
+// sphere 텍스트 스크롤의 가로 캔버스 폭(gridWidthPx)에 쓸 "대표" gapRatioX 하나를 구한다.
+// sphere는 gapRatioX가 위도(행)마다 다른데(적도 ~0.39, 극지방 ~0.55), 각 폰이 자기
+// 행 값을 쓰면 폰마다 캔버스 폭이 달라져 스크롤 진행률이 어긋나는 문제가 있었다
+// (TextScrollView.kt 참고 - 그래서 한때 gap 보정을 아예 뺐었음). 대신 gridCols와
+// 같은 기준(가장 넓은 행)의 gapRatioX 하나를 서버가 뽑아 전 폰에 방송하면, 모든 폰이
+// 같은 값으로 계산해서 싱크는 유지하면서 간격 보정도 되살릴 수 있다.
+// flat은 gapRatioX가 device.meta에 없으므로(매니페스트 최상위 gap 필드를 쓰는 구조)
+// 여기선 못 찾고 0을 반환하는데, flat은 애초에 이 값을 안 쓰므로 문제 없다.
+function computeRefGapRatioX(rowCounts) {
+  if (!manifest || !rowCounts || rowCounts.length === 0) return 0;
+  const maxCount = Math.max(...rowCounts);
+  const refRow = rowCounts.indexOf(maxCount);
+  const device = manifest.devices.find(
+    (d) => d.meta && d.meta.row === refRow && typeof d.meta.gapRatioX === 'number',
+  );
+  return device ? device.meta.gapRatioX : 0;
+}
+
 // 폰이 wall/ready/{deviceId}로 보고한 체크섬을 manifest의 기대값과 비교해 상태를 기록한다.
 function handleFileReady(deviceId, payload) {
   let msg;
@@ -665,6 +683,7 @@ app.post('/api/text/start', (req, res) => {
     speed: cfg.speed,
     rowCounts,
     totalRows: rowCounts.length,
+    refGapRatioX: computeRefGapRatioX(rowCounts),
     startAt: Date.now() + DEFAULT_TEXT_LEAD_TIME_MS,
   };
   publishControl(message, { retain: false });

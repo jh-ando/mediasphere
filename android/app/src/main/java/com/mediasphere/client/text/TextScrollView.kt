@@ -79,6 +79,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val myLon: Double?,
         val gapRatioX: Double,
         val gapRatioY: Double,
+        val refGapRatioX: Double,
     )
 
     private var params: Params? = null
@@ -113,6 +114,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         myLon: Double? = null,
         gapRatioX: Double = 0.0,
         gapRatioY: Double = 0.0,
+        refGapRatioX: Double = 0.0,
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.create(fontFamily, Typeface.NORMAL)
@@ -138,6 +140,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             // 0.9 상한 - 혹시 잘못된 값이 와도 pitch가 폭발적으로 커지는 걸 막는 안전장치
             gapRatioX = gapRatioX.coerceIn(0.0, 0.9),
             gapRatioY = gapRatioY.coerceIn(0.0, 0.9),
+            refGapRatioX = refGapRatioX.coerceIn(0.0, 0.9),
         )
 
         // 새 세션 시작 - 목표(실시간 offsetMs)와 완전히 일치한 상태로 초기화한다.
@@ -186,11 +189,15 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         // gapRatioX가 위도(행)마다 다르게 설계돼 있어(적도 ~0.39, 극지방 ~0.55) 자기
         // pitchW를 쓰면 폰마다 gridWidthPx가 달라지고, 그 결과 loopLength(=blockWidth+
         // gridWidthPx)도 폰마다 달라져 위도가 극지방에 가까울수록 스크롤 진행률이 어긋나며
-        // 속도가 달라 보이는 문제가 있었다(sphere 텍스트 스크롤 스크롤 싱크 깨짐, 2026-09).
-        // sphere는 gapRatioX가 애초에 위치 계산(myLon 기반)엔 안 쓰이고 여기서만 영향을
-        // 줬으므로, sphere일 땐 gap 보정 없는 원래 화면 폭(width, 동일 기종이라 전 폰
-        // 동일)을 그대로 기준으로 쓴다 - 가로 방향 실측 간격 보정은 포기하되 동기화를 지킨다.
-        val gridWidthPx = gridCols * (if (p.myLon != null) width.toFloat() else pitchW)
+        // 속도가 달라 보이는 문제가 있었다(sphere 텍스트 스크롤 싱크 깨짐, 2026-09).
+        // 처음엔 sphere에서 gap 보정을 아예 빼고 원래 화면 폭만 썼는데(간격 미반영이라
+        // 글자가 압축돼 보임), 지금은 서버가 방송하는 refGapRatioX(가장 넓은 행 하나의
+        // 대표값, TEXT_SCROLL 메시지에 포함)로 통일해서 쓴다 - 전 폰이 같은 값을 받으므로
+        // gridWidthPx가 다시 전 폰 동일해지면서(싱크 유지) 간격 보정도 살아난다. 다른
+        // 행은 실제 gapRatioX와 약간 다를 수 있지만(적도~극지방 0.39~0.55 편차) 0으로
+        // 두는 것보다는 훨씬 자연스럽다.
+        val refPitchW = width / (1.0 - p.refGapRatioX).toFloat()
+        val gridWidthPx = gridCols * (if (p.myLon != null) refPitchW else pitchW)
         val gridHeightPx = p.totalRows.coerceAtLeast(1) * pitchH
 
         // smoothedOffsetMs를 실시간 목표(TimeSyncManager.currentOffsetMs())로 조금씩 쫓아간다

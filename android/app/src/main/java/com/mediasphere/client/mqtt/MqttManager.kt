@@ -86,6 +86,10 @@ sealed class MqttControlMessage {
     // 텍스트 스크롤 시작 - rowCounts[i] = i번째 행의 디바이스 수(서버가 manifest에서 계산).
     // 폰은 자기 row/col(config.json에 배포 시점에 저장됨)과 이 배열로 전체 배너 중
     // 자기 몫만 계산해서 그린다. align: left/center/right, direction: left/right/up/down.
+    // refGapRatioX: sphere 가로축 캔버스 폭 계산용 "대표" gapRatioX - 서버가 가장 넓은
+    // 행(gridCols 기준 행) 값 하나를 뽑아 전 폰에 방송한다. 폰마다 자기 행의 gapRatioX를
+    // 쓰면 위도별로 캔버스 폭이 달라져 스크롤 싱크가 깨지기 때문에(TextScrollView.kt
+    // 참고), 모든 폰이 이 값 하나로 통일해서 계산한다. flat은 안 씀(0으로 옴).
     data class TextScroll(
         val text: String,
         val font: String,
@@ -97,6 +101,7 @@ sealed class MqttControlMessage {
         val speedPxPerSec: Float,
         val rowCounts: List<Int>,
         val totalRows: Int,
+        val refGapRatioX: Double,
         val startAt: Long,
     ) : MqttControlMessage()
     object TextStop : MqttControlMessage()
@@ -398,6 +403,7 @@ class MqttManager(
                         speedPxPerSec = json.getDouble("speed").toFloat(),
                         rowCounts = (0 until rowCountsArr.length()).map { rowCountsArr.getInt(it) },
                         totalRows = json.getInt("totalRows"),
+                        refGapRatioX = json.optDouble("refGapRatioX", 0.0),
                         startAt = json.getLong("startAt"),
                     )
                 }
