@@ -9,8 +9,8 @@ slice_video.py 는 이 파일만 보고 동작하므로, 레이아웃이 바뀌�
   # Phase 3 - 3행 5열 평면 15분할
   python3 gen_tiles.py flat --cols 5 --rows 3 --source 5400x7020 -o tiles_flat15.json
 
-  # 운영 - 구체 499대 (등장방형 8K 원본)
-  python3 gen_tiles.py sphere --source 7680x3840 -o tiles_sphere499.json
+  # 운영 - 구체 439대 (등장방형 8K 원본)
+  python3 gen_tiles.py sphere --source 7680x3840 -o tiles_sphere439.json
 """
 import argparse
 import json
@@ -265,7 +265,7 @@ def main():
                    help="홀수 행 경도를 절반 어긋나게 배치")
     s.add_argument("--margin", type=float, default=0.0,
                    help="화면 크기 여유율 (0.02 = 2%% 더 크게 crop)")
-    s.add_argument("--rows-file", help="위도/대수 JSON 배열 파일 (미지정 시 내장 499대)")
+    s.add_argument("--rows-file", help="위도/대수 JSON 배열 파일 (미지정 시 내장 439대)")
     s.add_argument("--front-back", action="store_true",
                    help="등장방형이 아니라 일반 영상 한 장을 전/후면에 미러링해서 씌우는 "
                         "모드. --source는 1:1 정사각이어야 함(2:1 원본이면 중앙 크롭 후 사용)")
