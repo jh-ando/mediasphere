@@ -181,7 +181,16 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         // 그리드 전체를 하나의 캔버스로 본다 - 열 수는 rowCounts 중 가장 넓은 행 기준
         // (100대 균일 그리드는 전부 같은 값이라 문제 없음, 구체는 범위 밖).
         val gridCols = (p.rowCounts.maxOrNull() ?: 1).coerceAtLeast(1)
-        val gridWidthPx = gridCols * pitchW
+        // gridWidthPx는 모든 폰이 똑같이 계산해야 같은 캔버스를 공유한다. flat은 gapRatioX가
+        // 매니페스트 전체 공통값이라 pitchW가 이미 전 폰 동일해서 문제없지만, sphere는
+        // gapRatioX가 위도(행)마다 다르게 설계돼 있어(적도 ~0.39, 극지방 ~0.55) 자기
+        // pitchW를 쓰면 폰마다 gridWidthPx가 달라지고, 그 결과 loopLength(=blockWidth+
+        // gridWidthPx)도 폰마다 달라져 위도가 극지방에 가까울수록 스크롤 진행률이 어긋나며
+        // 속도가 달라 보이는 문제가 있었다(sphere 텍스트 스크롤 스크롤 싱크 깨짐, 2026-09).
+        // sphere는 gapRatioX가 애초에 위치 계산(myLon 기반)엔 안 쓰이고 여기서만 영향을
+        // 줬으므로, sphere일 땐 gap 보정 없는 원래 화면 폭(width, 동일 기종이라 전 폰
+        // 동일)을 그대로 기준으로 쓴다 - 가로 방향 실측 간격 보정은 포기하되 동기화를 지킨다.
+        val gridWidthPx = gridCols * (if (p.myLon != null) width.toFloat() else pitchW)
         val gridHeightPx = p.totalRows.coerceAtLeast(1) * pitchH
 
         // smoothedOffsetMs를 실시간 목표(TimeSyncManager.currentOffsetMs())로 조금씩 쫓아간다

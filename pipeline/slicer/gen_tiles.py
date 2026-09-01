@@ -93,19 +93,30 @@ def gen_flat(src_w, src_h, cols, rows, gap_ratio_x, gap_ratio_y, order):
 
 # ---------------------------------------------------------------- 구체 레이아웃
 
-def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin):
+def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin, front_back=False):
     """
     등장방형 원본에서 각 폰의 위도/경도 구간을 직사각형으로 잘라낸다.
 
     - 세로: 위도가 픽셀에 선형 대응하므로 모든 폰이 동일한 높이
     - 가로: 위도가 높을수록 경도 폭이 1/cos(lat) 배로 넓어짐
     - 좌우 경계를 넘는 타일은 wrap=True 로 표시 (slice_video.py 가 이어붙임)
+
+    front_back=True면 등장방형이 아니라 "일반 영상 한 장을 전/후면에 미러링해서
+    씌우는" 모드다(원본은 1:1 정사각 - main()에서 검증). lon=0을 전면 극,
+    lon=180을 후면 극으로 두고 전면([270,360)∪[0,90])은 원본을 그대로,
+    후면([90,270])은 mirroredLon=180-lon으로 좌우 반전해서 매핑한다 - lon이
+    커질수록 srcX가 반대로 움직이게 만드는 것뿐이라 ffmpeg hflip 없이 crop
+    좌표 계산만으로 미러링이 끝난다(CLAUDE.md "전/후면 미러 매핑" 설계 노트 참고).
+    두 이음매(lon=90/270)에 정확히 걸치는 소수 타일(439대 배치 기준 8대,
+    위도 ±64.29/±38.57)은 절반씩 다른 매핑이 필요한데, 이번 라운드는 단순
+    crop 하나로 처리하고 이음매 부분의 미세한 왜곡은 감수하기로 함(실기기
+    확인 후 필요하면 등장방형의 wrap 타일처럼 hflip+hstack으로 보정 예정).
     """
     sw_mm, sh_mm = screen_mm()
     sw_mm *= (1.0 + margin)
     sh_mm *= (1.0 + margin)
 
-    ppd_x = src_w / 360.0
+    ppd_x = src_w / (180.0 if front_back else 360.0)
     ppd_y = src_h / 180.0
 
     d_lat = math.degrees(sh_mm / radius_mm)
@@ -144,30 +155,52 @@ def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin):
         for i in range(count):
             n += 1
             lon = (lon_step * i + lon_off) % 360.0
-            cx = lon * ppd_x
+
+            if front_back:
+                if 90.0 <= lon <= 270.0:
+                    local_lon = 180.0 - lon
+                    hemisphere = "back"
+                else:
+                    local_lon = lon if lon <= 90.0 else lon - 360.0
+                    hemisphere = "front"
+                cx = (local_lon + 90.0) * ppd_x
+            else:
+                cx = lon * ppd_x
+
             cy = (90.0 - lat) * ppd_y
             x = int(round(cx - tile_w / 2))
             y = int(round(cy - tile_h / 2))
             y = max(0, min(y, src_h - tile_h))
 
-            wrap = x < 0 or x + tile_w > src_w
-            x = x % src_w
+            if front_back:
+                # 전/후면 모드는 등장방형처럼 0도/360도가 같은 지점이 아니라서
+                # (이음매는 90/270도, 위 gen_sphere() 독스트링 참고) modulo로
+                # 감싸면 안 되고, 화면 범위 안으로 clamp만 한다.
+                wrap = False
+                x = max(0, min(x, src_w - tile_w))
+            else:
+                wrap = x < 0 or x + tile_w > src_w
+                x = x % src_w
+
+            meta = {
+                "row": ri,
+                "lat": round(lat, 4),
+                "lon": round(lon, 4),
+                "d_lat": round(d_lat, 4),
+                "d_lon": round(d_lon, 4),
+                # config.json에서 최종적으로 쓰일 이름과 그대로 맞춰서 저장 -
+                # gen_configs.py는 이 값을 복사만 하면 된다.
+                "gapRatioX": round(gap_lon, 4),
+                "gapRatioY": round(gap_lat, 4),
+            }
+            if front_back:
+                meta["hemisphere"] = hemisphere  # 디버깅/검증용 - Android/서버는 안 씀
 
             tiles.append({
                 "id": f"P{n:03d}",
                 "x": x, "y": y, "w": tile_w, "h": tile_h,
                 "wrap": wrap,
-                "meta": {
-                    "row": ri,
-                    "lat": round(lat, 4),
-                    "lon": round(lon, 4),
-                    "d_lat": round(d_lat, 4),
-                    "d_lon": round(d_lon, 4),
-                    # config.json에서 최종적으로 쓰일 이름과 그대로 맞춰서 저장 -
-                    # gen_configs.py는 이 값을 복사만 하면 된다.
-                    "gapRatioX": round(gap_lon, 4),
-                    "gapRatioY": round(gap_lat, 4),
-                },
+                "meta": meta,
             })
     return tiles
 
@@ -233,6 +266,9 @@ def main():
     s.add_argument("--margin", type=float, default=0.0,
                    help="화면 크기 여유율 (0.02 = 2%% 더 크게 crop)")
     s.add_argument("--rows-file", help="위도/대수 JSON 배열 파일 (미지정 시 내장 499대)")
+    s.add_argument("--front-back", action="store_true",
+                   help="등장방형이 아니라 일반 영상 한 장을 전/후면에 미러링해서 씌우는 "
+                        "모드. --source는 1:1 정사각이어야 함(2:1 원본이면 중앙 크롭 후 사용)")
 
     a = ap.parse_args()
     out_w, out_h = parse_wh(a.output)
@@ -264,11 +300,16 @@ def main():
         tiles = gen_flat(src_w, src_h, a.cols, a.rows, a.gap_x, a.gap_y, a.order)
         projection = "flat"
     else:
+        if a.front_back and src_w != src_h:
+            print(f"[!] --front-back은 1:1(정사각) 원본이 필요합니다 (현재 {src_w}x{src_h}). "
+                  f"2:1 등장방형 원본이면 --front-back 없이 쓰거나, 먼저 1:1로 중앙 크롭하세요.",
+                  file=sys.stderr)
+            sys.exit(1)
         rows_spec = SPHERE_ROWS
         if a.rows_file:
             rows_spec = [tuple(r) for r in json.load(open(a.rows_file))]
-        tiles = gen_sphere(src_w, src_h, a.radius, rows_spec, a.stagger, a.margin)
-        projection = "equirect"
+        tiles = gen_sphere(src_w, src_h, a.radius, rows_spec, a.stagger, a.margin, a.front_back)
+        projection = "frontback-mirror" if a.front_back else "equirect"
 
     # gap: 폰 화면 대비 실제 물리 간격(피치) 비율. 텍스트 스크롤이 폰 사이 여백까지
     # 감안해서 흐르게 하는 데 쓴다(가로/세로 각 0.0=간격 없음 ~ 값이 클수록 넓은 간격).
