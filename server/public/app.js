@@ -42,17 +42,6 @@ const textSpeedEl = document.getElementById('text-speed');
 const btnTextStart = document.getElementById('btn-text-start');
 const btnTextStop = document.getElementById('btn-text-stop');
 
-const textPatternControlsEl = document.getElementById('text-pattern-controls');
-const textPatternContentEl = document.getElementById('text-pattern-content');
-const textPatternFgColorEl = document.getElementById('text-pattern-fg-color');
-const textPatternBgColorEl = document.getElementById('text-pattern-bg-color');
-const textPatternCharStaggerEl = document.getElementById('text-pattern-char-stagger');
-const textPatternFadeInEl = document.getElementById('text-pattern-fade-in');
-const textPatternHoldEl = document.getElementById('text-pattern-hold');
-const textPatternFadeOutEl = document.getElementById('text-pattern-fade-out');
-const btnTextPatternStart = document.getElementById('btn-text-pattern-start');
-const btnTextPatternStop = document.getElementById('btn-text-pattern-stop');
-
 const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
@@ -68,7 +57,6 @@ const vrLogEl = document.getElementById('vr-log');
 // 패턴/텍스트 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
 let editingTextConfig = false;
-let editingTextPatternConfig = false;
 
 // 버전 확인/ID 표시 토글 상태 - 서버에 별도로 물어보지 않고 이 페이지에서만 기억한다
 // (새로고침하면 꺼진 상태로 초기화됨 - 폰 쪽 상태와 항상 일치시키려면 서버가 상태를
@@ -204,18 +192,10 @@ function applyStatusUpdate(data) {
     textSpeedEl.value = data.textScrollConfig.speed;
   }
 
-  if (data.textPatternConfig && !editingTextPatternConfig) {
-    textPatternContentEl.value = data.textPatternConfig.text;
-    textPatternFgColorEl.value = data.textPatternConfig.fgColor;
-    textPatternBgColorEl.value = data.textPatternConfig.bgColor;
-    textPatternCharStaggerEl.value = data.textPatternConfig.charStaggerMs;
-    textPatternFadeInEl.value = data.textPatternConfig.fadeInMs;
-    textPatternHoldEl.value = data.textPatternConfig.holdMs;
-    textPatternFadeOutEl.value = data.textPatternConfig.fadeOutMs;
-  }
 }
 
-// 모드 토글 강조 표시 + 영상/패턴/텍스트 컨트롤 활성화 상태를 함께 갱신한다.
+// 모드 토글 강조 표시 + 그 모드에 쓰는 컨트롤 그룹만 보여준다(나머지는 hidden으로
+// 화면에서 아예 빠짐 - 예전엔 전부 항상 그려두고 흐리게(disabled)만 했었음).
 function setModeUi(mode) {
   const isVideo = mode === 'video';
   const isPattern = mode === 'pattern';
@@ -225,32 +205,9 @@ function setModeUi(mode) {
   modePatternBtn.classList.toggle('active', isPattern);
   modeTextBtn.classList.toggle('active', isText);
 
-  btnPlay.disabled = !isVideo;
-  btnStop.disabled = !isVideo;
-  videoControlsEl.classList.toggle('disabled', !isVideo);
-
-  patternColorEl.disabled = !isPattern;
-  patternIntervalEl.disabled = !isPattern;
-  patternDurationEl.disabled = !isPattern;
-  patternStepDelayEl.disabled = !isPattern;
-  btnPatternPlay.disabled = !isPattern;
-  btnPatternStop.disabled = !isPattern;
-  btnSequencePlay.disabled = !isPattern;
-  btnSequenceStop.disabled = !isPattern;
-  patternControlsEl.classList.toggle('disabled', !isPattern);
-
-  [textPatternContentEl, textPatternFgColorEl, textPatternBgColorEl, textPatternCharStaggerEl,
-    textPatternFadeInEl, textPatternHoldEl, textPatternFadeOutEl,
-    btnTextPatternStart, btnTextPatternStop].forEach((el) => {
-    el.disabled = !isPattern;
-  });
-  textPatternControlsEl.classList.toggle('disabled', !isPattern);
-
-  [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
-    textAlignEl, textDirectionEl, textSpeedEl, btnTextStart, btnTextStop].forEach((el) => {
-    el.disabled = !isText;
-  });
-  textControlsEl.classList.toggle('disabled', !isText);
+  videoControlsEl.hidden = !isVideo;
+  patternControlsEl.hidden = !isPattern;
+  textControlsEl.hidden = !isText;
 }
 
 function postJson(url, body) {
@@ -281,18 +238,6 @@ function sendTextConfig() {
     direction: textDirectionEl.value,
     speed: Number(textSpeedEl.value),
   }).catch((err) => console.error('[HTTP] 텍스트 설정 저장 실패', err));
-}
-
-function sendTextPatternConfig() {
-  postJson('/api/text-pattern/config', {
-    text: textPatternContentEl.value,
-    fgColor: textPatternFgColorEl.value,
-    bgColor: textPatternBgColorEl.value,
-    charStaggerMs: Number(textPatternCharStaggerEl.value),
-    fadeInMs: Number(textPatternFadeInEl.value),
-    holdMs: Number(textPatternHoldEl.value),
-    fadeOutMs: Number(textPatternFadeOutEl.value),
-  }).catch((err) => console.error('[HTTP] 텍스트 패턴 설정 저장 실패', err));
 }
 
 function formatTimecode(ms) {
@@ -374,25 +319,6 @@ btnTextStart.addEventListener('click', () => {
 
 btnTextStop.addEventListener('click', () => {
   fetch('/api/text/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 정지 요청 실패', err));
-});
-
-[textPatternContentEl, textPatternFgColorEl, textPatternBgColorEl, textPatternCharStaggerEl,
-  textPatternFadeInEl, textPatternHoldEl, textPatternFadeOutEl].forEach((el) => {
-  el.addEventListener('focus', () => {
-    editingTextPatternConfig = true;
-  });
-  el.addEventListener('blur', () => {
-    editingTextPatternConfig = false;
-  });
-  el.addEventListener('change', sendTextPatternConfig);
-});
-
-btnTextPatternStart.addEventListener('click', () => {
-  fetch('/api/text-pattern/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 패턴 시작 요청 실패', err));
-});
-
-btnTextPatternStop.addEventListener('click', () => {
-  fetch('/api/text-pattern/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 패턴 정지 요청 실패', err));
 });
 
 btnPatternPlay.addEventListener('click', () => {

@@ -177,10 +177,6 @@ body {
   border: 1px solid #262b35;
 }
 
-.pattern-controls.disabled {
-  opacity: 0.4;
-}
-
 .pattern-field {
   display: flex;
   flex-direction: column;
