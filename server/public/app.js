@@ -61,6 +61,7 @@ const vrApCountEl = document.getElementById('vr-ap-count');
 const btnVrSaveApCount = document.getElementById('btn-vr-save-ap-count');
 const vrFileEl = document.getElementById('vr-file');
 const btnVrStart = document.getElementById('btn-vr-start');
+const btnVrCancel = document.getElementById('btn-vr-cancel');
 const vrStatusEl = document.getElementById('vr-status');
 const vrLogEl = document.getElementById('vr-log');
 
@@ -496,6 +497,7 @@ function applyVideoReplaceProgress(data) {
 
   const busy = step !== 'idle' && step !== 'done' && step !== 'error';
   btnVrStart.disabled = busy;
+  btnVrCancel.disabled = !busy;
 }
 
 // 페이지 로드 시 저장된 AP 대수를 불러와 입력칸에 채운다.
@@ -552,6 +554,18 @@ btnVrStart.addEventListener('click', () => {
       console.error('[HTTP] 영상 교체 요청 실패', err);
       btnVrStart.disabled = false;
     });
+});
+
+btnVrCancel.addEventListener('click', () => {
+  if (!window.confirm('진행 중인 영상 교체를 취소할까요? 지금까지 인코딩한 내용은 버려집니다.')) return;
+
+  fetch('/api/video/replace/cancel', { method: 'POST' })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.ok) window.alert(`취소 실패: ${data.error || '알 수 없는 오류'}`);
+      // 실제 상태 전환은 VIDEO_REPLACE_PROGRESS로 반영된다.
+    })
+    .catch((err) => console.error('[HTTP] 영상 교체 취소 요청 실패', err));
 });
 
 connect();

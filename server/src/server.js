@@ -1125,8 +1125,15 @@ app.post('/api/deploy-config', (req, res) => {
 // WebSocket('/')에 VIDEO_REPLACE_PROGRESS로 실시간 방송한다(단계 + 최근 로그).
 let videoReplaceState = { step: 'idle', log: [], error: null };
 const VIDEO_REPLACE_LOG_MAX_LINES = 300;
+// 지금 실행 중인 자식 프로세스(gen_tiles.py 또는 deploy.py) - 취소 시 이걸 죽인다.
+// deploy.py는 내부에서 slice_video.py/gen_manifest.py/gen_configs.py를 또 자식으로
+// 띄우므로, POSIX(리눅스 서버)에서는 detached로 띄운 뒤 프로세스 그룹째로 죽여야
+// 그 손자 프로세스(특히 ffmpeg)까지 같이 정리된다.
+let currentChildProcess = null;
+let cancelRequested = false;
 
 function pushVideoReplaceLog(line) {
+  console.log(`[영상교체] ${line}`); // 대시보드를 안 열어도 서버 터미널에서 볼 수 있게
   videoReplaceState.log.push(line);
   if (videoReplaceState.log.length > VIDEO_REPLACE_LOG_MAX_LINES) videoReplaceState.log.shift();
   broadcastVideoReplaceState();
@@ -1151,7 +1158,10 @@ function broadcastVideoReplaceState() {
 function runProcess(cmd, args, cwd) {
   return new Promise((resolve, reject) => {
     pushVideoReplaceLog(`$ ${cmd} ${args.join(' ')}`);
-    const proc = spawn(cmd, args, { cwd });
+    // detached: true (POSIX만) - 이 프로세스가 자기만의 프로세스 그룹 리더가 되어,
+    // 취소 시 -pid로 그룹 전체(손자 프로세스인 ffmpeg 포함)를 죽일 수 있다.
+    const proc = spawn(cmd, args, { cwd, detached: process.platform !== 'win32' });
+    currentChildProcess = proc;
     const onOutput = (data) => {
       data.toString().split('\n').filter((line) => line.trim().length > 0)
         .forEach((line) => pushVideoReplaceLog(line));
@@ -1159,11 +1169,32 @@ function runProcess(cmd, args, cwd) {
     proc.stdout.on('data', onOutput);
     proc.stderr.on('data', onOutput);
     proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`종료 코드 ${code}`));
+    proc.on('close', (code, signal) => {
+      currentChildProcess = null;
+      if (cancelRequested) reject(new Error('CANCELLED'));
+      else if (code === 0) resolve();
+      else reject(new Error(`종료 코드 ${code}${signal ? ` (signal ${signal})` : ''}`));
     });
   });
+}
+
+// 진행 중인 영상 교체를 중단한다. deploy.py가 slice_video.py/ffmpeg를 또 자식으로
+// 띄우므로 프로세스 트리 전체를 죽여야 한다 - POSIX는 프로세스 그룹(-pid)으로,
+// Windows는 일반 kill()이 직접 자식(python)만 죽이고 그 밑 ffmpeg는 고아로 남는 것을
+// 로컬 테스트에서 실제로 확인해서 taskkill /t(트리 전체)로 죽인다.
+function cancelVideoReplace() {
+  if (!currentChildProcess) return false;
+  cancelRequested = true;
+  try {
+    if (process.platform !== 'win32') {
+      process.kill(-currentChildProcess.pid, 'SIGTERM');
+    } else {
+      spawn('taskkill', ['/pid', String(currentChildProcess.pid), '/t', '/f']);
+    }
+  } catch (err) {
+    console.error('[영상교체] 취소 중 오류:', err.message);
+  }
+  return true;
 }
 
 // 업로드된 영상 하나로 439대 전체를 다시 자르고 배포한다. mode: 'equirect' | 'frontback'.
@@ -1198,9 +1229,15 @@ async function processVideoReplace(mode, uploadedPath) {
 
     setVideoReplaceStep('done');
   } catch (err) {
-    console.error('[HTTP] 영상 교체 실패:', err.message);
-    setVideoReplaceStep('error', err.message);
+    if (cancelRequested) {
+      pushVideoReplaceLog('사용자 요청으로 취소됨');
+      setVideoReplaceStep('error', '취소됨');
+    } else {
+      console.error('[HTTP] 영상 교체 실패:', err.message);
+      setVideoReplaceStep('error', err.message);
+    }
   } finally {
+    cancelRequested = false;
     fs.unlink(uploadedPath, () => {}); // 업로드 임시 파일 정리 - 실패해도 무시
   }
 }
@@ -1229,6 +1266,18 @@ app.post('/api/video/replace', videoUpload.single('video'), (req, res) => {
   console.log(`[HTTP] 영상 교체 시작 - mode=${mode} file=${req.file.originalname} (${req.file.size}B)`);
   res.json({ ok: true, mode });
   processVideoReplace(mode, req.file.path);
+});
+
+app.post('/api/video/replace/cancel', (req, res) => {
+  if (videoReplaceState.step === 'idle' || videoReplaceState.step === 'done'
+    || videoReplaceState.step === 'error'
+  ) {
+    res.status(409).json({ ok: false, error: '진행 중인 영상 교체 작업이 없습니다.' });
+    return;
+  }
+  const cancelled = cancelVideoReplace();
+  console.log('[HTTP] 영상 교체 취소 요청');
+  res.json({ ok: cancelled });
 });
 
 // 현재 배포된 최신 APK 버전 정보 - 폰은 이걸 직접 쓰지 않고 wall/ota(retain)로 받는다.
