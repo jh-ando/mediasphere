@@ -62,6 +62,16 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         private const val MAX_OFFSET_CATCHUP_RATIO = 0.05
         // 이 값을 넘는 offset 변화(수동 시각 변경 등 드문 경우)는 서서히 쫓아가지 않고 즉시 반영한다.
         private const val OFFSET_SNAP_THRESHOLD_MS = 500L
+
+        // Paint.textSize를 이 값보다 크게 직접 주지 않는다 - fontSize를 수만 px(예: 25000)로
+        // 직접 넣으면 Skia가 내부적으로 글리프 위치를 계산할 때 좌표 정밀도 한계를 넘어서
+        // 뒤쪽 글자일수록 위치가 어긋나거나 아예 안 그려지는 문제가 실기기에서 확인됐다
+        // ("ANDO" 4글자 중 앞의 두 글자만 정상, 나머지는 깨짐 - fontSize=25000일 때).
+        // 실제 텍스트 크기는 Paint 자체가 아니라 onDraw()에서 canvas.scale()로 키운다 -
+        // 텍스트는 폰트 파일의 벡터 윤곽선을 매 프레임 다시 그리는 방식이라(비트맵이 아님)
+        // scale로 키워도 화질 손실이 없다. Paint.measureText로 재는 폭/높이는 이 작은
+        // 크기 기준이라 renderScale을 곱해야 실제(world) 크기가 나온다.
+        private const val SAFE_TEXT_SIZE_PX = 300f
     }
 
     private data class Params(
@@ -81,6 +91,9 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val gapRatioY: Double,
         val refGapRatioX: Double,
         val centerRow: Int?,
+        // fontSize가 SAFE_TEXT_SIZE_PX보다 크면 1.0보다 커진다 - onDraw()가 이 배율만큼
+        // Paint의 측정값(폭/높이)과 canvas.scale()을 같이 키워서 실제 fontSize와 맞춘다.
+        val renderScale: Float,
     )
 
     private var params: Params? = null
@@ -118,9 +131,12 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         refGapRatioX: Double = 0.0,
         centerRow: Int? = null,
     ) {
+        // fontSize가 SAFE_TEXT_SIZE_PX 이하면 renderScale=1(기존과 완전히 동일한 동작) -
+        // 이 값을 넘을 때만 Paint에는 작게 주고 onDraw()에서 canvas.scale()로 키운다.
+        val renderScale = if (fontSize > SAFE_TEXT_SIZE_PX) fontSize / SAFE_TEXT_SIZE_PX else 1f
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.create(fontFamily, Typeface.NORMAL)
-            textSize = fontSize.toFloat()
+            textSize = fontSize / renderScale
             color = parseColorOrDefault(textColor, Color.WHITE)
         }
 
@@ -145,6 +161,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             refGapRatioX = refGapRatioX.coerceIn(0.0, 0.9),
             // null이면 flat(totalRows 기준 기하학적 중앙), 값이 있으면 sphere(그 행에 정렬)
             centerRow = centerRow,
+            renderScale = renderScale,
         )
 
         // 새 세션 시작 - 목표(실시간 offsetMs)와 완전히 일치한 상태로 초기화한다.
@@ -175,9 +192,12 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
 
         canvas.drawColor(p.bgColor)
 
+        // p.paint는 SAFE_TEXT_SIZE_PX 이하 크기로 만들어져 있으므로(companion object 주석
+        // 참고), 여기서 재는 폭/높이도 그만큼 작다 - renderScale을 곱해서 실제(world) 크기로
+        // 바꿔야 아래 캔버스 배치 계산(루프 길이, 그리드 중앙 정렬 등)이 맞는다.
         val fm = p.paint.fontMetrics
-        val lineHeight = fm.descent - fm.ascent
-        val blockWidth = p.lines.maxOf { p.paint.measureText(it) }
+        val lineHeight = (fm.descent - fm.ascent) * p.renderScale
+        val blockWidth = p.lines.maxOf { p.paint.measureText(it) } * p.renderScale
         val blockHeight = lineHeight * p.lines.size
 
         // 폰 화면(width/height)이 아니라 폰 간 실제 간격(pitch)을 그리드의 한 칸으로 쓴다 -
@@ -287,14 +307,21 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val localOriginY = originY - (p.myRow * pitchH) - (pitchH - height) / 2f
 
         p.lines.forEachIndexed { i, line ->
-            val lineWidth = p.paint.measureText(line)
+            val lineWidth = p.paint.measureText(line) * p.renderScale
             val alignOffset = when (p.align) {
                 "left" -> 0f
                 "right" -> blockWidth - lineWidth
                 else -> (blockWidth - lineWidth) / 2f
             }
-            val baseline = localOriginY + i * lineHeight - fm.ascent
-            canvas.drawText(line, localOriginX + alignOffset, baseline, p.paint)
+            val baseline = localOriginY + i * lineHeight - fm.ascent * p.renderScale
+            // world 좌표(localOriginX/baseline)로 translate한 뒤 scale을 걸고, drawText 자체는
+            // (0,0) 기준 SAFE_TEXT_SIZE_PX 크기로 그린다 - 벡터 윤곽선이라 scale로 키워도
+            // 화질 손실 없이 실제 fontSize 크기로 렌더링된다(companion object 주석 참고).
+            canvas.save()
+            canvas.translate(localOriginX + alignOffset, baseline)
+            canvas.scale(p.renderScale, p.renderScale)
+            canvas.drawText(line, 0f, 0f, p.paint)
+            canvas.restore()
         }
     }
 }
