@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "publish-apk": "node scripts/publish-apk.js"
+    "publish-apk": "node scripts/publish-apk.js",
+    "trigger-play": "node scripts/trigger-play.js"
   },
   "dependencies": {
     "app-info-parser": "^1.1.6",

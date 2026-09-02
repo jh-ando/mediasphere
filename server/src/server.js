@@ -571,15 +571,22 @@ app.use('/clips', express.static(VIDEOS_DIR));
 // 폰이 다운로드하는 APK - scripts/publish-apk.js가 채워 넣는 apk/
 app.use('/apk', express.static(APK_DIR));
 
-// 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
-app.post('/api/play', (req, res) => {
+// isPlaying = true, startAt = 현재 시각으로 세팅하고 MQTT PLAY 명령을 발행한다.
+// /api/play(대시보드)와 playbackWss(외부 재생 신호 WebSocket)가 공유한다 - 로깅은
+// 호출부마다 다르게 남기고 싶어서 여기엔 안 넣는다.
+function triggerPlay() {
   state.isPlaying = true;
   state.startAt = Date.now();
   tickCount = 0;
-
   publishControl({ type: 'PLAY', startAt: state.startAt });
+  return state.startAt;
+}
 
-  console.log(`[HTTP] 재생 시작 - startAt=${state.startAt}`);
+// 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
+app.post('/api/play', (req, res) => {
+  const startAt = triggerPlay();
+
+  console.log(`[HTTP] 재생 시작 - startAt=${startAt}`);
   res.json({ success: true, state });
 });
 
@@ -1093,10 +1100,26 @@ app.get('/api/time', (req, res) => {
   res.json({ serverMs: Date.now() });
 });
 
-// ── WebSocket 대시보드 ────────────────────────────────
-// REST API와 같은 포트(:3000)에서 WebSocket도 함께 서비스한다.
+// ── WebSocket 대시보드 + 외부 재생 신호 ─────────────────
+// REST API와 같은 포트(:3000)에서 WebSocket도 함께 서비스한다. 경로 두 개를
+// 같은 httpServer에 붙여야 해서(대시보드 '/', 외부 연동 '/playback-control')
+// 각각을 noServer로 만들고 upgrade 이벤트에서 경로를 보고 직접 라우팅한다 -
+// WebSocketServer에 path를 안 주면 그 인스턴스가 모든 경로의 upgrade를 다
+// 받아버려서, 경로별로 분리하려면 이 방식이 표준이다(ws 공식 문서 패턴).
 const httpServer = http.createServer(app);
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({ noServer: true }); // 대시보드 - 경로 '/'
+const playbackWss = new WebSocketServer({ noServer: true }); // 외부 재생 신호 - docs/LGU_WebSocket_Playback_Signal_Protocol_simple.md
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+  if (pathname === '/playback-control') {
+    playbackWss.handleUpgrade(req, socket, head, (ws) => playbackWss.emit('connection', ws, req));
+  } else if (pathname === '/') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
+});
 
 wss.on('connection', (ws) => {
   console.log(`[WS] 대시보드 연결 - 현재 접속 수: ${wss.clients.size}`);
@@ -1108,6 +1131,39 @@ wss.on('connection', (ws) => {
 
   ws.on('error', (err) => {
     console.error('[WS] 오류:', err.message);
+  });
+});
+
+// 외부 디스플레이 컨트롤 업체 연동 - docs/LGU_WebSocket_Playback_Signal_Protocol_simple.md.
+// 인증 없음(폐쇄망 전제, 문서와 동일) - PLAY_TRIGGER 수신 시 /api/play와 동일하게 재생을
+// 시작하고 ACK로 startAt을 돌려준다. 그 외 타입/파싱 실패는 ERROR로 응답한다.
+playbackWss.on('connection', (ws) => {
+  console.log(`[WS] 재생 신호 연결 - 현재 접속 수: ${playbackWss.clients.size}`);
+
+  ws.on('message', (data) => {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch (err) {
+      ws.send(JSON.stringify({ type: 'ERROR', message: '잘못된 JSON입니다.' }));
+      return;
+    }
+
+    if (msg.type === 'PLAY_TRIGGER') {
+      const startAt = triggerPlay();
+      console.log(`[WS] PLAY_TRIGGER 수신 - startAt=${startAt}`);
+      ws.send(JSON.stringify({ type: 'ACK', received: 'PLAY_TRIGGER', startAt }));
+    } else {
+      ws.send(JSON.stringify({ type: 'ERROR', message: `알 수 없는 type입니다: ${msg.type}` }));
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`[WS] 재생 신호 연결 종료 - 현재 접속 수: ${playbackWss.clients.size}`);
+  });
+
+  ws.on('error', (err) => {
+    console.error('[WS] 재생 신호 오류:', err.message);
   });
 });
 
