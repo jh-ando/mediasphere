@@ -118,13 +118,6 @@ class MainActivity : ComponentActivity() {
     // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
     private lateinit var currentVideoFile: File
 
-    // 재생 중이라 applyVideoFile()이 즉시 반영하지 못하고 미뤄둔 파일. STOP/패턴 모드 전환처럼
-    // 재생이 멈추는 시점에 이 값이 있으면 자동으로 다시 적용한다 - 그렇지 않으면 앱을 재시작하기
-    // 전까지 새로 배포한 영상이 영영 반영되지 않는 문제가 있었다.
-    private var pendingVideoFile: File? = null
-    // pendingVideoFile을 나중에 적용할 때 같이 넘겨야 하는 forceReload 값 (아래 참고).
-    private var pendingForceReload: Boolean = false
-
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
     private var pendingStartAt: Long? = null
@@ -355,7 +348,6 @@ class MainActivity : ComponentActivity() {
                 pendingPlayJob?.cancel()
                 playbackStarted = false
                 pendingStartAt = null
-                applyPendingVideoFileIfAny()
 
                 // retain된 STOP을 재접속 후에 받는 경우에도 다른 폰과 같은 프레임을 보여주도록
                 // 정지된 위치(elapsedMs % duration)로 seek한 뒤 정지한다.
@@ -410,7 +402,6 @@ class MainActivity : ComponentActivity() {
         player.pause()
         playbackStarted = false
         pendingStartAt = null
-        applyPendingVideoFileIfAny()
         currentMode = Mode.VIDEO
 
         // 모드 전환은 뷰 visibility만 바꾸는 것이라 시스템 insets 콜백이 다시 불리지 않는다.
@@ -434,7 +425,6 @@ class MainActivity : ComponentActivity() {
         TextPatternAnimator.stop()
         playbackStarted = false
         pendingStartAt = null
-        applyPendingVideoFileIfAny()
         currentMode = Mode.PATTERN
         clearColorOverlay()
 
@@ -458,7 +448,6 @@ class MainActivity : ComponentActivity() {
         patternView.alpha = 0f
         playbackStarted = false
         pendingStartAt = null
-        applyPendingVideoFileIfAny()
         currentMode = Mode.TEXT_SCROLL
         clearColorOverlay()
         textScrollView.visibility = View.VISIBLE
@@ -882,32 +871,23 @@ class MainActivity : ComponentActivity() {
     // forceReload=true(syncVideoFile()이 실제로 재다운로드한 경우)면 경로가 같아도 재로드한다 -
     // 서버가 같은 파일명으로 내용만 바꿔 재배포한 경우(재인코딩 후 재배포 등) ExoPlayer가 이미
     // 열어둔 옛 파일 핸들을 계속 쓰는 바람에 앱을 재시작해야만 새 영상이 반영되던 문제가 있었다.
-    // 재생 중(playbackStarted)에는 439대 동기화를 깨뜨리지 않기 위해 교체를 보류한다 -
-    // 다음 syncVideoFile 호출(재접속/CHECK_UPDATE) 때 다시 시도된다. 반드시 메인 스레드에서 호출.
+    //
+    // 재생 중이어도 곧바로 교체한다 - 예전엔 439대 동기화가 깨질까봐 STOP/모드전환 때까지
+    // 보류했었는데, 이 설치는 사실상 24시간 연속 재생이라 STOP이 올 일이 없어 보류된 교체가
+    // 영영 적용되지 못하고 앱 재시작이 강제되는 문제가 있었다. 실제로는 보류가 불필요하다 -
+    // setMediaItem() 직후 currentPosition이 0으로 리셋돼도, DriftCorrector.kt가 매 UDP
+    // 패킷(33ms 간격)마다 오차를 감지해서 200ms 초과 시 즉시 seekTo(targetPos)로 맞춰주므로
+    // 다음 패킷 안에 자동으로 재동기화된다. 교체 순간 그 폰만 잠깐(길어야 수백ms) 멈칫할 수
+    // 있지만, 폰마다 다운로드 완료 시점이 달라 이 멈칫함도 분산되고, 439대 동시 재시작(전체
+    // 검은 화면)보다 훨씬 덜 disruptive하다. 반드시 메인 스레드에서 호출.
     private fun applyVideoFile(dest: File, forceReload: Boolean = false) {
-        if (!forceReload && dest.path == currentVideoFile.path) {
-            pendingVideoFile = null
-            return
-        }
-        if (playbackStarted) {
-            pendingVideoFile = dest
-            pendingForceReload = forceReload
-            Log.d(SYNC_TAG, "재생 중이라 미디어 교체 보류 - ${dest.path} (정지 시 자동 적용)")
-            return
-        }
+        if (!forceReload && dest.path == currentVideoFile.path) return
 
-        pendingVideoFile = null
         currentVideoFile = dest
         player.setMediaItem(MediaItem.fromUri(Uri.fromFile(dest)))
         player.prepare()
+        if (playbackStarted) player.play()
         Log.d(SYNC_TAG, "재생 파일 교체 완료 - ${dest.path}")
-    }
-
-    // STOP, 패턴 모드 전환처럼 재생이 멈추는 시점에 호출한다 - applyVideoFile()이 재생 중이라
-    // 미뤄뒀던 파일이 있으면 이제(재생 중이 아니므로) 적용한다.
-    private fun applyPendingVideoFileIfAny() {
-        val pending = pendingVideoFile ?: return
-        applyVideoFile(pending, forceReload = pendingForceReload)
     }
 
     // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤
