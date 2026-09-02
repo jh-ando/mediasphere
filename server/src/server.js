@@ -38,7 +38,6 @@ const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
 const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
 const TEXT_PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-pattern-config.json');
-const DEPLOY_CONFIG_PATH = path.join(__dirname, '..', 'data', 'deploy-config.json');
 // 폐쇄망 로컬 MQTT라 개별 발행(최대 439건)도 통상 수십~수백ms 안에 전달된다 - 1초면
 // 여유 있음. 혹시 이 시각을 놓친 폰이 있어도 TextPatternAnimator가 즉시(지연 0으로)
 // 페이드인을 시작할 뿐 에러 없이 우아하게 처리된다(그 폰만 살짝 늦게 보일 뿐).
@@ -72,6 +71,7 @@ const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 // 1:1 정사각(2160x2160). 실제 업로드 파일 해상도가 다르면 slice_video.py가 이미
 // 자동으로 중앙 크롭+스케일 처리하므로(--fit crop 기본값) 여기서 별도 리사이즈는 안 한다.
 const VIDEO_REPLACE_TARGET_SIZE = { equirect: '4096x2048', frontback: '2160x2160' };
+const VIDEO_REPLACE_AP_COUNT = 10; // 현장 AP 대수 고정값 - 안 바뀌므로 UI에서 입력받지 않음
 
 // ── APK 배포(OTA) 경로 ────────────────────────────────
 // scripts/publish-apk.js가 APK를 넣고 이 파일을 갱신하는 것을 전제로 한다.
@@ -121,11 +121,6 @@ const state = {
   currentColor: {
     color: null,
     stress: null,
-  },
-  // 대시보드 영상 교체가 쓰는 AP(SSID) 대수 - 현장 배치 후 거의 안 바뀌므로 매번 입력받지
-  // 않고 저장해뒀다가 재사용한다.
-  deployConfig: {
-    apCount: 10,
   },
 };
 
@@ -204,31 +199,6 @@ function loadTextPatternConfig() {
 }
 
 loadTextPatternConfig();
-
-// deployConfig를 deploy-config.json에 저장한다 (POST /api/deploy-config 호출 시마다).
-function saveDeployConfig() {
-  try {
-    fs.mkdirSync(path.dirname(DEPLOY_CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(DEPLOY_CONFIG_PATH, JSON.stringify(state.deployConfig, null, 2));
-  } catch (err) {
-    console.error('[HTTP] deploy-config.json 저장 실패:', err.message);
-  }
-}
-
-// 서버 시작 시 저장된 deployConfig가 있으면 불러온다 (loadTextScrollConfig와 동일 패턴).
-function loadDeployConfig() {
-  if (!fs.existsSync(DEPLOY_CONFIG_PATH)) return;
-
-  try {
-    const loaded = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_PATH));
-    state.deployConfig = { ...state.deployConfig, ...loaded };
-    console.log(`[HTTP] deploy-config.json 로드 완료 - ${JSON.stringify(state.deployConfig)}`);
-  } catch (err) {
-    console.error('[HTTP] deploy-config.json 파싱 실패 - 기본값 유지:', err.message);
-  }
-}
-
-loadDeployConfig();
 
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
@@ -1102,24 +1072,6 @@ app.post('/api/distribute/publish', (req, res) => {
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
 });
 
-// deployConfig(AP 대수) 조회/저장 - 대시보드 영상 교체 UI가 매번 입력받지 않고 재사용한다.
-app.get('/api/deploy-config', (req, res) => {
-  res.json({ ok: true, deployConfig: state.deployConfig });
-});
-
-app.post('/api/deploy-config', (req, res) => {
-  const { apCount } = req.body || {};
-  const n = Number(apCount);
-  if (!Number.isInteger(n) || n < 1) {
-    res.status(400).json({ ok: false, error: 'apCount는 1 이상의 정수여야 합니다.' });
-    return;
-  }
-  state.deployConfig.apCount = n;
-  saveDeployConfig();
-  console.log(`[HTTP] deployConfig 저장 - apCount=${n}`);
-  res.json({ ok: true, deployConfig: state.deployConfig });
-});
-
 // ── 대시보드 영상 교체 (업로드 → tiles 생성 → 인코딩 → manifest/config → 발행) ──
 // gen_tiles.py/deploy.py를 자식 프로세스로 그대로 호출한다. 진행상황은 대시보드
 // WebSocket('/')에 VIDEO_REPLACE_PROGRESS로 실시간 방송한다(단계 + 최근 로그).
@@ -1224,7 +1176,7 @@ async function processVideoReplace(mode, uploadedPath) {
       'deploy.py',
       '-i', uploadedPath,
       '-t', tilesPath,
-      '--ap-count', String(state.deployConfig.apCount),
+      '--ap-count', String(VIDEO_REPLACE_AP_COUNT),
       '--base-config', BASE_CONFIG_PATH,
       '--encoder', 'hevc_nvenc',
       '-j', '10',

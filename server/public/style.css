@@ -137,6 +137,14 @@ body {
   max-width: 100%;
 }
 
+/* [hidden]의 기본 UA 스타일(display:none)은 author 스타일(.control-group의
+   display:flex)보다 우선순위가 낮아서 그냥 묻힌다 - hidden 속성을 줘도 계속
+   flex로 보이던 버그가 있었음(el.hidden은 true인데 실제로는 안 사라짐).
+   더 구체적인 선택자로 명시해서 확실히 이기게 한다. */
+.control-group[hidden] {
+  display: none;
+}
+
 .btn {
   padding: 10px 28px;
   font-size: 14px;
@@ -287,16 +295,6 @@ body {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-}
-
-#vr-ap-count {
-  background: #12151a;
-  border: 1px solid #2f3542;
-  border-radius: 4px;
-  color: #e6e8eb;
-  padding: 6px 8px;
-  font-size: 13px;
-  width: 90px;
 }
 
 .video-replace-status {

@@ -46,8 +46,6 @@ const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
 
-const vrApCountEl = document.getElementById('vr-ap-count');
-const btnVrSaveApCount = document.getElementById('btn-vr-save-ap-count');
 const vrFileEl = document.getElementById('vr-file');
 const btnVrStart = document.getElementById('btn-vr-start');
 const btnVrCancel = document.getElementById('btn-vr-cancel');
@@ -425,28 +423,6 @@ function applyVideoReplaceProgress(data) {
   btnVrStart.disabled = busy;
   btnVrCancel.disabled = !busy;
 }
-
-// 페이지 로드 시 저장된 AP 대수를 불러와 입력칸에 채운다.
-fetch('/api/deploy-config')
-  .then((res) => res.json())
-  .then((data) => {
-    if (data.ok && data.deployConfig) vrApCountEl.value = data.deployConfig.apCount;
-  })
-  .catch((err) => console.error('[HTTP] deploy-config 조회 실패', err));
-
-btnVrSaveApCount.addEventListener('click', () => {
-  const apCount = Number(vrApCountEl.value);
-  if (!Number.isInteger(apCount) || apCount < 1) {
-    window.alert('AP 대수는 1 이상의 정수로 입력하세요.');
-    return;
-  }
-  postJson('/api/deploy-config', { apCount })
-    .then((res) => res.json())
-    .then((data) => {
-      if (!data.ok) window.alert(`저장 실패: ${data.error}`);
-    })
-    .catch((err) => console.error('[HTTP] deploy-config 저장 실패', err));
-});
 
 btnVrStart.addEventListener('click', () => {
   const file = vrFileEl.files[0];
