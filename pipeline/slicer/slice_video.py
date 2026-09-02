@@ -43,9 +43,17 @@ def build_filter(tile, src_w, out_w, out_h, prescale, scale_flags):
     """
     한 타일에 대한 filter_complex 문자열을 만든다.
     wrap 타일(경도 0도 경계를 넘는 경우)은 좌우 두 조각을 이어붙인다.
+
+    gen_tiles.py의 --front-back 모드가 붙인 meta.hemisphere == "back"인 타일은
+    crop 좌표(mirroredLon 기준)만으로는 안 끝난다 - crop 위치는 이미 반대쪽으로
+    옮겨져 있지만, 그 사각형 내부 픽셀 순서는 그대로라 "위치만 반대인 조각들의
+    나열"이지 실제 좌우 반전(미러)이 아니다(예: 원본 [A,B,C,D]를 2등분 미러하면
+    1번 타일이 [D,C]를 보여줘야 하는데 crop만으로는 [C,D]가 나옴). 그래서 crop
+    직후에 hflip을 한 번 더 걸어 타일 내부 좌우도 실제로 뒤집는다.
     """
     pre = f"{prescale}," if prescale else ""
     x, y, w, h = tile["x"], tile["y"], tile["w"], tile["h"]
+    flip = "hflip," if tile.get("meta", {}).get("hemisphere") == "back" else ""
 
     if tile.get("wrap"):
         w1 = min(w, src_w - x)
@@ -53,10 +61,10 @@ def build_filter(tile, src_w, out_w, out_h, prescale, scale_flags):
         f = (f"[0:v]{pre}split=2[a][b];"
              f"[a]crop={w1}:{h}:{x}:{y}[l];"
              f"[b]crop={w2}:{h}:0:{y}[r];"
-             f"[l][r]hstack=inputs=2,"
+             f"[l][r]hstack=inputs=2,{flip}"
              f"scale={out_w}:{out_h}:flags={scale_flags},setsar=1[v]")
     else:
-        f = (f"[0:v]{pre}crop={w}:{h}:{x}:{y},"
+        f = (f"[0:v]{pre}crop={w}:{h}:{x}:{y},{flip}"
              f"scale={out_w}:{out_h}:flags={scale_flags},setsar=1[v]")
     return f
 
