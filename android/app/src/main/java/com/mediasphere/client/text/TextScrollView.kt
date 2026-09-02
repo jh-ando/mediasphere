@@ -269,7 +269,18 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         // 가로축만 flat(myCol)/sphere(myLon) 분기 - 클래스 상단 주석 참고. 세로축은 위도
         // 간격이 균일해서 flat과 동일하게 myRow 기반으로 계산한다.
         val localOriginX = if (p.myLon != null) {
-            originX - ((p.myLon / 360.0) * gridWidthPx).toFloat()
+            // 경도가 이미 360도로 닫힌 원이라 originX(캔버스 좌표)와 내 위치(devicePos)를
+            // 그냥 빼면 안 된다 - 예를 들어 경도 350도 폰의 devicePos는 gridWidthPx 근처인데
+            // 텍스트가 막 이음매(0도=360도)를 넘어 originX가 0 근처로 넘어간 순간, 단순
+            // 뺄셈으로는 "아주 멀리 있다"(거의 -gridWidthPx)로 계산돼 화면에 안 그려진다 -
+            // 실제로는 바로 옆인데도 그렇게 되어 이음매를 지날 때마다 화면이 비어보였다
+            // (연속 회전 버그, 2026-09). gridWidthPx를 기준으로 순환 정규화해서 "원 위의
+            // 최단 거리"로 바꾸면 이음매 양쪽 폰이 항상 정확히 가까운 쪽으로 계산된다.
+            val devicePos = (p.myLon / 360.0) * gridWidthPx
+            val raw = originX - devicePos
+            var wrapped = (raw % gridWidthPx + gridWidthPx) % gridWidthPx // [0, gridWidthPx)
+            if (wrapped > gridWidthPx / 2) wrapped -= gridWidthPx // (-gridWidthPx/2, gridWidthPx/2]
+            wrapped.toFloat()
         } else {
             originX - (p.myCol * pitchW) - (pitchW - width) / 2f
         }
