@@ -80,6 +80,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val gapRatioX: Double,
         val gapRatioY: Double,
         val refGapRatioX: Double,
+        val centerRow: Int?,
     )
 
     private var params: Params? = null
@@ -115,6 +116,7 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         gapRatioX: Double = 0.0,
         gapRatioY: Double = 0.0,
         refGapRatioX: Double = 0.0,
+        centerRow: Int? = null,
     ) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.create(fontFamily, Typeface.NORMAL)
@@ -141,6 +143,8 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             gapRatioX = gapRatioX.coerceIn(0.0, 0.9),
             gapRatioY = gapRatioY.coerceIn(0.0, 0.9),
             refGapRatioX = refGapRatioX.coerceIn(0.0, 0.9),
+            // null이면 flat(totalRows 기준 기하학적 중앙), 값이 있으면 sphere(그 행에 정렬)
+            centerRow = centerRow,
         )
 
         // 새 세션 시작 - 목표(실시간 offsetMs)와 완전히 일치한 상태로 초기화한다.
@@ -224,11 +228,31 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
         val originX: Float
         val originY: Float
         if (p.direction == "left" || p.direction == "right") {
-            val loopLength = blockWidth + gridWidthPx
-            val progress = distance % loopLength
-            // "left": 오른쪽 끝에서 등장해 왼쪽으로 진행. "right": 왼쪽 끝에서 등장해 오른쪽으로 진행.
-            originX = if (p.direction == "left") gridWidthPx - progress else -blockWidth + progress
-            originY = (gridHeightPx - blockHeight) / 2f
+            if (p.myLon != null) {
+                // sphere: 경도가 이미 360도로 닫힌 원이라 진입/퇴장 여백(blockWidth)이
+                // 필요 없다 - 오히려 그 여백 동안 화면 어디에도 텍스트가 없어서 "한 바퀴
+                // 돌고 사라진 것처럼" 보였다. loopLength를 gridWidthPx만으로 잡으면
+                // progress가 0으로 wrap되는 순간(originX 기준 gridWidthPx<->0)이 물리적으로
+                // 같은 지점(경도 0도=360도)이라 끊김 없이 계속 도는 것처럼 보인다.
+                val loopLength = gridWidthPx
+                val progress = distance % loopLength
+                originX = if (p.direction == "left") gridWidthPx - progress else progress
+            } else {
+                // flat: 평면 벽은 닫힌 원이 아니므로(왼쪽 끝과 오른쪽 끝이 다른 물리적
+                // 위치) 기존처럼 진입/퇴장 여백이 있는 티커 방식을 그대로 쓴다.
+                val loopLength = blockWidth + gridWidthPx
+                val progress = distance % loopLength
+                // "left": 오른쪽 끝에서 등장해 왼쪽으로 진행. "right": 왼쪽 끝에서 등장해 오른쪽으로 진행.
+                originX = if (p.direction == "left") gridWidthPx - progress else -blockWidth + progress
+            }
+            // flat은 totalRows 기준 기하학적 중앙(기존 방식). sphere는 439대 남/북
+            // 비대칭 배치(북 5행+남 6행) 탓에 그 중앙이 적도보다 살짝 남쪽으로 치우쳐서
+            // (row 5/6 경계) 서버가 알려준 centerRow(적도 행)에 직접 맞춘다.
+            originY = if (p.centerRow != null) {
+                (p.centerRow + 0.5f) * pitchH - blockHeight / 2f
+            } else {
+                (gridHeightPx - blockHeight) / 2f
+            }
         } else {
             val loopLength = blockHeight + gridHeightPx
             val progress = distance % loopLength

@@ -94,6 +94,10 @@ sealed class MqttControlMessage {
     // 행(gridCols 기준 행) 값 하나를 뽑아 전 폰에 방송한다. 폰마다 자기 행의 gapRatioX를
     // 쓰면 위도별로 캔버스 폭이 달라져 스크롤 싱크가 깨지기 때문에(TextScrollView.kt
     // 참고), 모든 폰이 이 값 하나로 통일해서 계산한다. flat은 안 씀(0으로 옴).
+    // centerRow: 위도 0도(적도)에 해당하는 행 인덱스 - sphere는 남/북 비대칭 배치라
+    // totalRows 기준 기하학적 중앙이 적도와 안 맞아서(TextScrollView.kt 참고), 서버가
+    // manifest에서 직접 찾아 알려준다. flat은 필드 자체가 없다(null - 기존 totalRows
+    // 기준 중앙을 그대로 씀).
     data class TextScroll(
         val text: String,
         val font: String,
@@ -106,6 +110,7 @@ sealed class MqttControlMessage {
         val rowCounts: List<Int>,
         val totalRows: Int,
         val refGapRatioX: Double,
+        val centerRow: Int?,
         val startAt: Long,
     ) : MqttControlMessage()
     object TextStop : MqttControlMessage()
@@ -409,6 +414,8 @@ class MqttManager(
                         rowCounts = (0 until rowCountsArr.length()).map { rowCountsArr.getInt(it) },
                         totalRows = json.getInt("totalRows"),
                         refGapRatioX = json.optDouble("refGapRatioX", 0.0),
+                        // has()로 필드 존재 자체를 확인 - 없으면(flat) null, 있으면(sphere) 그 값.
+                        centerRow = if (json.has("centerRow")) json.getInt("centerRow") else null,
                         startAt = json.getLong("startAt"),
                     )
                 }

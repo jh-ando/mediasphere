@@ -276,6 +276,23 @@ function computeRefGapRatioX(rowCounts) {
   return device ? device.meta.gapRatioX : 0;
 }
 
+// 위도 0도(적도)에 해당하는 행 인덱스를 찾는다 - 텍스트 스크롤 세로 중앙 정렬용.
+// 439대 배치는 남/북 비대칭(북 5행 + 남 6행)이라 totalRows/2로 기하학적 중앙을 잡으면
+// 적도보다 살짝 남쪽으로 치우친다(TextScrollView.kt 참고) - 그래서 행 개수가 아니라
+// 실제 위도가 0에 가장 가까운 행을 직접 찾아서 그 행에 중앙을 맞춘다.
+// flat은 meta에 lat이 없으므로 null을 반환한다(flat은 기존 totalRows 기준 중앙을 그대로 씀).
+function computeCenterRow() {
+  if (!manifest) return null;
+  let best = null;
+  for (const device of manifest.devices) {
+    const lat = device.meta && device.meta.lat;
+    const row = device.meta && device.meta.row;
+    if (typeof lat !== 'number' || typeof row !== 'number') continue;
+    if (best === null || Math.abs(lat) < Math.abs(best.lat)) best = { lat, row };
+  }
+  return best ? best.row : null;
+}
+
 // 폰이 wall/ready/{deviceId}로 보고한 체크섬을 manifest의 기대값과 비교해 상태를 기록한다.
 function handleFileReady(deviceId, payload) {
   let msg;
@@ -690,6 +707,7 @@ app.post('/api/text/start', (req, res) => {
   }
 
   const cfg = state.textScrollConfig;
+  const centerRow = computeCenterRow();
   const message = {
     type: 'TEXT_SCROLL',
     text: cfg.text,
@@ -703,6 +721,10 @@ app.post('/api/text/start', (req, res) => {
     rowCounts,
     totalRows: rowCounts.length,
     refGapRatioX: computeRefGapRatioX(rowCounts),
+    // flat은 null이라 필드 자체를 안 넣는다 - 폰이 필드 유무로 flat/sphere를 구분한다
+    // (있으면 sphere, 없으면 flat 기존 방식 - null을 넣으면 org.json의 has()가 true를
+    // 반환해서 getInt가 실패하므로 아예 필드를 빼야 한다).
+    ...(centerRow !== null ? { centerRow } : {}),
     startAt: Date.now() + DEFAULT_TEXT_LEAD_TIME_MS,
   };
   publishControl(message, { retain: false });

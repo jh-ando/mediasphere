@@ -485,6 +485,7 @@ class MainActivity : ComponentActivity() {
             gapRatioX = config?.gapRatioX ?: 0.0,
             gapRatioY = config?.gapRatioY ?: 0.0,
             refGapRatioX = message.refGapRatioX,
+            centerRow = message.centerRow,
         )
         Log.d(TAG, "텍스트 스크롤 시작 - row=${config?.row} col=${config?.col} lat=${config?.lat} lon=${config?.lon} "
             + "gapRatioX=${config?.gapRatioX} gapRatioY=${config?.gapRatioY}")
