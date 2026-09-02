@@ -1,6 +1,7 @@
 package com.mediasphere.client.mqtt
 
 import android.util.Log
+import com.mediasphere.client.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -81,7 +82,10 @@ sealed class MqttControlMessage {
 
     // 전체 폰 대상 deviceId 큰 숫자 표시 - 영상/패턴 모드와 무관하게 잠깐 오버레이로 덮는다
     // (물리 설치 시 "이 폰이 몇 번인지" 확인용). 특정 폰이 아니라 전체에 방송한다.
+    // durationMs <= 0이면 PATTERN_START의 duration=0(무한 반복)과 같은 관례로 "자동으로
+    // 안 꺼지고 계속 표시" - 끌 때는 별도로 HideId를 발행한다.
     data class ShowId(val durationMs: Long) : MqttControlMessage()
+    object HideId : MqttControlMessage()
 
     // 텍스트 스크롤 시작 - rowCounts[i] = i번째 행의 디바이스 수(서버가 manifest에서 계산).
     // 폰은 자기 row/col(config.json에 배포 시점에 저장됨)과 이 배열로 전체 배너 중
@@ -390,6 +394,7 @@ class MqttManager(
                 "SHOW_ID" -> MqttControlMessage.ShowId(
                     durationMs = json.optLong("duration", DEFAULT_SHOW_ID_DURATION_MS),
                 )
+                "HIDE_ID" -> MqttControlMessage.HideId
                 "TEXT_SCROLL" -> {
                     val rowCountsArr = json.getJSONArray("rowCounts")
                     MqttControlMessage.TextScroll(
@@ -543,6 +548,10 @@ class MqttManager(
             put("deviceId", deviceId)
             put("status", "online")
             put("timestamp", System.currentTimeMillis())
+            // 대시보드가 OTA 이후 실제 실행 중인 버전을 확인할 수 있도록 - wall/ota/status는
+            // "배포가 잘 진행됐는지"만 알려줄 뿐, 재부팅 등으로 시간이 지난 뒤 이 폰이 지금
+            // 정확히 몇 버전을 실행 중인지는 heartbeat로만 알 수 있다.
+            put("versionCode", BuildConfig.VERSION_CODE)
         }.toString()
 
         try {

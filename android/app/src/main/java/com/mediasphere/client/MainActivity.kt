@@ -387,6 +387,7 @@ class MainActivity : ComponentActivity() {
             is MqttControlMessage.SequenceStart -> handleSequenceStart(message)
             MqttControlMessage.SequenceStop -> handleSequenceStop()
             is MqttControlMessage.ShowId -> showIdOverlay(message.durationMs)
+            MqttControlMessage.HideId -> hideIdOverlay()
             is MqttControlMessage.ColorChange -> handleColorChange(message)
             is MqttControlMessage.ColorClear -> handleColorClear(message)
             is MqttControlMessage.ColorState -> handleColorState(message)
@@ -715,14 +716,24 @@ class MainActivity : ComponentActivity() {
     // deviceId를 durationMs 동안 화면 맨 위에 덮어 보여준다. 영상/패턴 모드나 재생 상태를
     // 전혀 건드리지 않는 순수 오버레이라, 시간이 지나면 원래 화면이 그대로 이어서 보인다.
     // MQTT(SHOW_ID)와 앱 실행 직후 자동 호출 양쪽에서 공유한다 - 새로 호출되면 이전 타이머는 취소.
+    // durationMs <= 0이면 PATTERN_START의 duration=0과 같은 관례로 자동으로 안 꺼지고
+    // 계속 표시한다 - 끌 때는 hideIdOverlay()(HIDE_ID 명령)를 쓴다.
     private fun showIdOverlay(durationMs: Long) {
         idHideJob?.cancel()
         idView.text = mqttManager.deviceId().toString()
         idView.visibility = View.VISIBLE
-        idHideJob = lifecycleScope.launch {
-            delay(durationMs)
-            idView.visibility = View.GONE
+        if (durationMs > 0) {
+            idHideJob = lifecycleScope.launch {
+                delay(durationMs)
+                idView.visibility = View.GONE
+            }
         }
+    }
+
+    private fun hideIdOverlay() {
+        idHideJob?.cancel()
+        idHideJob = null
+        idView.visibility = View.GONE
     }
 
     // startAt이 미래 시각이면 그 시각까지 대기하고, 그렇지 않더라도 최소 START_DELAY_MS만큼은

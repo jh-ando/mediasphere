@@ -3,6 +3,8 @@ const RECONNECT_DELAY_MS = 3000;
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
 const otaStatusCountEl = document.getElementById('ota-status-count');
+const versionStatusCountEl = document.getElementById('version-status-count');
+const btnVersionToggle = document.getElementById('btn-version-toggle');
 const btnShowId = document.getElementById('btn-show-id');
 const playStateEl = document.getElementById('play-state');
 const timecodeEl = document.getElementById('timecode');
@@ -60,6 +62,12 @@ let editingPatternConfig = false;
 let editingTextConfig = false;
 let editingTextPatternConfig = false;
 
+// 버전 확인/ID 표시 토글 상태 - 서버에 별도로 물어보지 않고 이 페이지에서만 기억한다
+// (새로고침하면 꺼진 상태로 초기화됨 - 폰 쪽 상태와 항상 일치시키려면 서버가 상태를
+// 들고 있어야 하는데, 이 두 토글은 그 정도로 중요하지 않다고 판단해 단순하게 둠).
+let versionCheckEnabled = false;
+let idShowing = false;
+
 // 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
 let lastDevices = {};
@@ -102,6 +110,9 @@ function applyStatusUpdate(data) {
   const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
   const otaStatus = data.otaStatus || {};
   const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
+  const versions = data.versions || {};
+  const latestVersionCode = data.latestVersionCode;
+  const versionCounts = { latest: 0, old: 0, unknown: 0 };
 
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
@@ -124,6 +135,16 @@ function applyStatusUpdate(data) {
     const oStatus = otaStatus[id] || 'idle';
     otaCounts[oStatus] = (otaCounts[oStatus] || 0) + 1;
 
+    // 버전 카운트/셀 표시는 latestVersionCode를 알 때만 의미가 있다(app-version.json 없으면
+    // 비교 기준이 없어 전부 unknown 취급). 토글이 꺼져 있어도 카운트 텍스트는 항상 계산해서
+    // 보여준다 - 셀 강조만 토글로 켜고 끈다.
+    const v = versions[id];
+    const vKey = typeof v !== 'number' || typeof latestVersionCode !== 'number'
+      ? 'unknown'
+      : (v >= latestVersionCode ? 'latest' : 'old');
+    versionCounts[vKey] += 1;
+    if (cell) cell.classList.toggle('version-mismatch', versionCheckEnabled && vKey === 'old');
+
     if (status === 'offline') offlineIds.push(id);
   }
   lastDevices = data.devices;
@@ -134,6 +155,11 @@ function applyStatusUpdate(data) {
   otaStatusCountEl.textContent =
     `OTA: 대기 ${otaCounts.idle} / 다운 ${otaCounts.downloading} / 설치 ${otaCounts.installing} `
     + `/ 완료 ${otaCounts.done} / 실패 ${otaCounts.failed}`;
+
+  versionStatusCountEl.textContent = typeof latestVersionCode !== 'number'
+    ? '버전: app-version.json 없음'
+    : `버전(최신 v${latestVersionCode}): 최신 ${versionCounts.latest} / 구버전 ${versionCounts.old} `
+      + `/ 확인불가 ${versionCounts.unknown}`;
 
   offlineListEl.textContent = offlineIds.length > 0 ? offlineIds.join(', ') : '없음';
 
@@ -380,8 +406,30 @@ btnColorReset.addEventListener('click', () => {
   fetch('/api/color-reset', { method: 'POST' }).catch((err) => console.error('[HTTP] 컬러 초기화 요청 실패', err));
 });
 
+// duration:0 = 자동으로 안 꺼지고 계속 표시(PATTERN_START의 duration=0과 같은 관례) -
+// 끌 때는 /api/hide-id로 명시적으로 끈다. 상태는 이 버튼 라벨로만 표시한다.
 btnShowId.addEventListener('click', () => {
-  fetch('/api/show-id', { method: 'POST' }).catch((err) => console.error('[HTTP] ID 표시 요청 실패', err));
+  const turningOn = !idShowing;
+  const url = turningOn ? '/api/show-id' : '/api/hide-id';
+  const body = turningOn ? { duration: 0 } : undefined;
+  fetch(url, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+    .then(() => {
+      idShowing = turningOn;
+      btnShowId.textContent = idShowing ? 'ID 끄기' : 'ID 표시';
+      btnShowId.classList.toggle('active', idShowing);
+    })
+    .catch((err) => console.error('[HTTP] ID 표시 토글 요청 실패', err));
+});
+
+btnVersionToggle.addEventListener('click', () => {
+  versionCheckEnabled = !versionCheckEnabled;
+  btnVersionToggle.textContent = versionCheckEnabled ? '버전 확인 끄기' : '버전 확인 켜기';
+  btnVersionToggle.classList.toggle('active', versionCheckEnabled);
+  // 다음 STATUS_UPDATE(최대 1초 내)가 오면 셀 강조가 자동으로 반영된다.
 });
 
 // 쉼표로 구분된 deviceId 문자열("1, 2,3")을 정수 배열로 파싱한다. 잘못된 값이 섞여 있으면 null.

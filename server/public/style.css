@@ -87,6 +87,13 @@ body {
   color: #e6e8eb;
 }
 
+/* ID 표시/버전 확인처럼 켜짐 상태가 있는 토글 버튼 */
+.btn-small.active {
+  background: #3ddc84;
+  border-color: #3ddc84;
+  color: #0f1115;
+}
+
 .controls {
   display: flex;
   flex-direction: column;
@@ -303,6 +310,12 @@ main {
 /* 체크섬 불일치/다운로드 실패 - online 배경 위에 경고 테두리를 얹는다 (배경색 자체는 그대로 둠) */
 .device-cell.mismatch {
   box-shadow: inset 0 0 0 2px #f0b429;
+}
+
+/* 버전 확인 토글 켰을 때 구버전 기기 - box-shadow(mismatch)와 별개 속성이라 동시에 떠도 안 겹침 */
+.device-cell.version-mismatch {
+  outline: 2px solid #ef4444;
+  outline-offset: 1px;
 }
 
 .offline-section {

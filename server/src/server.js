@@ -189,6 +189,10 @@ loadTextPatternConfig();
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
 const deviceLastSeen = {};
+// deviceId(문자열) -> heartbeat에 실려온 앱 versionCode. OTA 진행상황(wall/ota/status)과
+// 달리 "지금 이 순간 실제로 실행 중인 버전"을 알려준다 - 재부팅 등으로 시간이 지난 뒤에도
+// heartbeat마다 계속 갱신되므로 대시보드 버전 확인 토글의 근거로 쓴다.
+const deviceVersion = {};
 
 function isDeviceOnline(deviceId) {
   const lastSeen = deviceLastSeen[deviceId];
@@ -468,12 +472,20 @@ mqttClient.on('error', (err) => {
   console.error('[MQTT] 오류:', err.message);
 });
 
-// wall/status/{id} heartbeat 수신 - 페이로드 내용과 무관하게 메시지가 온 것 자체를
-// 해당 deviceId의 heartbeat로 취급한다.
+// wall/status/{id} heartbeat 수신 - 존재 자체가 heartbeat이므로 파싱 실패해도 무시하고
+// lastSeen은 갱신한다. versionCode가 있으면 "지금 실행 중인 버전"으로 별도 기록한다.
 mqttClient.on('message', (topic, payload) => {
   const statusMatch = topic.match(/^wall\/status\/(\d+)$/);
   if (statusMatch) {
     deviceLastSeen[statusMatch[1]] = Date.now();
+    try {
+      const msg = JSON.parse(payload.toString());
+      if (typeof msg.versionCode === 'number') {
+        deviceVersion[statusMatch[1]] = msg.versionCode;
+      }
+    } catch (err) {
+      // 구버전 앱은 versionCode를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
+    }
     return;
   }
 
@@ -871,6 +883,14 @@ app.post('/api/show-id', (req, res) => {
   res.json({ ok: true, duration: finalDuration });
 });
 
+// ID 표시 끄기 - duration:0(상시 표시)으로 켠 걸 끌 때 쓴다. 대시보드의 켜기/끄기 토글이 공유.
+app.post('/api/hide-id', (req, res) => {
+  publishControl({ type: 'HIDE_ID' }, { retain: false });
+
+  console.log('[HTTP] ID 표시 끄기');
+  res.json({ ok: true });
+});
+
 // 앱 재시작(Activity recreate). targetDeviceIds를 안 주면 전체, 주면 그 deviceId들만 -
 // SEQUENCE_START와 같은 패턴으로 브로드캐스트하고 폰이 자기 deviceId로 스스로 걸러낸다.
 // 앱이 멈추거나 이상 동작할 때, 또는 wall/device 갱신이 재생 중이라 반영을 못 하고
@@ -1102,6 +1122,7 @@ function buildStatusPayload() {
   const devices = {};
   const fileStatus = {};
   const otaStatus = {};
+  const versions = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
@@ -1110,7 +1131,10 @@ function buildStatusPayload() {
     if (status === 'online') online += 1;
     fileStatus[id] = computeFileStatus(id);
     otaStatus[id] = computeOtaStatus(id);
+    if (typeof deviceVersion[id] === 'number') versions[id] = deviceVersion[id];
   }
+
+  const appVersion = readAppVersion();
 
   const payload = {
     type: 'STATUS_UPDATE',
@@ -1119,6 +1143,8 @@ function buildStatusPayload() {
     devices,
     fileStatus,
     otaStatus,
+    versions,
+    latestVersionCode: appVersion ? appVersion.versionCode : null,
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     patternConfig: state.patternConfig,
