@@ -7,7 +7,9 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const dgram = require('dgram');
+const { spawn } = require('child_process');
 const express = require('express');
+const multer = require('multer');
 const mqtt = require('mqtt');
 const { WebSocketServer, WebSocket } = require('ws');
 const { stressToColor } = require('../lib/stressColor');
@@ -36,6 +38,7 @@ const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
 const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
 const TEXT_PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-pattern-config.json');
+const DEPLOY_CONFIG_PATH = path.join(__dirname, '..', 'data', 'deploy-config.json');
 // 폐쇄망 로컬 MQTT라 개별 발행(최대 439건)도 통상 수십~수백ms 안에 전달된다 - 1초면
 // 여유 있음. 혹시 이 시각을 놓친 폰이 있어도 TextPatternAnimator가 즉시(지연 0으로)
 // 페이드인을 시작할 뿐 에러 없이 우아하게 처리된다(그 폰만 살짝 늦게 보일 뿐).
@@ -58,6 +61,17 @@ const DISTRIBUTE_DIR = path.join(__dirname, '..', 'distribute');
 const MANIFEST_PATH = path.join(DISTRIBUTE_DIR, 'manifest.json');
 const CONFIGS_DIR = path.join(DISTRIBUTE_DIR, 'configs');
 const VIDEOS_DIR = path.join(DISTRIBUTE_DIR, 'videos');
+
+// ── 대시보드 영상 교체 (업로드 → 분할 → 배포 원클릭) ─────────
+// pipeline/slicer의 gen_tiles.py/deploy.py를 자식 프로세스로 그대로 호출한다 - 별도
+// 파이프라인을 새로 만들지 않고 이미 검증된 CLI 스크립트를 그대로 재사용.
+const SLICER_DIR = path.join(__dirname, '..', '..', 'pipeline', 'slicer');
+const BASE_CONFIG_PATH = path.join(SLICER_DIR, 'base-config.example.json');
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+// gen_tiles.py --source 목표 해상도 - 등장방형은 2:1 관례값(4096x2048), 전/후면 미러는
+// 1:1 정사각(2160x2160). 실제 업로드 파일 해상도가 다르면 slice_video.py가 이미
+// 자동으로 중앙 크롭+스케일 처리하므로(--fit crop 기본값) 여기서 별도 리사이즈는 안 한다.
+const VIDEO_REPLACE_TARGET_SIZE = { equirect: '4096x2048', frontback: '2160x2160' };
 
 // ── APK 배포(OTA) 경로 ────────────────────────────────
 // scripts/publish-apk.js가 APK를 넣고 이 파일을 갱신하는 것을 전제로 한다.
@@ -107,6 +121,11 @@ const state = {
   currentColor: {
     color: null,
     stress: null,
+  },
+  // 대시보드 영상 교체가 쓰는 AP(SSID) 대수 - 현장 배치 후 거의 안 바뀌므로 매번 입력받지
+  // 않고 저장해뒀다가 재사용한다.
+  deployConfig: {
+    apCount: 10,
   },
 };
 
@@ -185,6 +204,31 @@ function loadTextPatternConfig() {
 }
 
 loadTextPatternConfig();
+
+// deployConfig를 deploy-config.json에 저장한다 (POST /api/deploy-config 호출 시마다).
+function saveDeployConfig() {
+  try {
+    fs.mkdirSync(path.dirname(DEPLOY_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(DEPLOY_CONFIG_PATH, JSON.stringify(state.deployConfig, null, 2));
+  } catch (err) {
+    console.error('[HTTP] deploy-config.json 저장 실패:', err.message);
+  }
+}
+
+// 서버 시작 시 저장된 deployConfig가 있으면 불러온다 (loadTextScrollConfig와 동일 패턴).
+function loadDeployConfig() {
+  if (!fs.existsSync(DEPLOY_CONFIG_PATH)) return;
+
+  try {
+    const loaded = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_PATH));
+    state.deployConfig = { ...state.deployConfig, ...loaded };
+    console.log(`[HTTP] deploy-config.json 로드 완료 - ${JSON.stringify(state.deployConfig)}`);
+  } catch (err) {
+    console.error('[HTTP] deploy-config.json 파싱 실패 - 기본값 유지:', err.message);
+  }
+}
+
+loadDeployConfig();
 
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
@@ -1058,6 +1102,135 @@ app.post('/api/distribute/publish', (req, res) => {
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
 });
 
+// deployConfig(AP 대수) 조회/저장 - 대시보드 영상 교체 UI가 매번 입력받지 않고 재사용한다.
+app.get('/api/deploy-config', (req, res) => {
+  res.json({ ok: true, deployConfig: state.deployConfig });
+});
+
+app.post('/api/deploy-config', (req, res) => {
+  const { apCount } = req.body || {};
+  const n = Number(apCount);
+  if (!Number.isInteger(n) || n < 1) {
+    res.status(400).json({ ok: false, error: 'apCount는 1 이상의 정수여야 합니다.' });
+    return;
+  }
+  state.deployConfig.apCount = n;
+  saveDeployConfig();
+  console.log(`[HTTP] deployConfig 저장 - apCount=${n}`);
+  res.json({ ok: true, deployConfig: state.deployConfig });
+});
+
+// ── 대시보드 영상 교체 (업로드 → tiles 생성 → 인코딩 → manifest/config → 발행) ──
+// gen_tiles.py/deploy.py를 자식 프로세스로 그대로 호출한다. 진행상황은 대시보드
+// WebSocket('/')에 VIDEO_REPLACE_PROGRESS로 실시간 방송한다(단계 + 최근 로그).
+let videoReplaceState = { step: 'idle', log: [], error: null };
+const VIDEO_REPLACE_LOG_MAX_LINES = 300;
+
+function pushVideoReplaceLog(line) {
+  videoReplaceState.log.push(line);
+  if (videoReplaceState.log.length > VIDEO_REPLACE_LOG_MAX_LINES) videoReplaceState.log.shift();
+  broadcastVideoReplaceState();
+}
+
+function setVideoReplaceStep(step, error) {
+  videoReplaceState.step = step;
+  videoReplaceState.error = error || null;
+  broadcastVideoReplaceState();
+}
+
+function broadcastVideoReplaceState() {
+  const message = JSON.stringify({ type: 'VIDEO_REPLACE_PROGRESS', ...videoReplaceState });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
+// 자식 프로세스를 실행하고 stdout/stderr를 줄 단위로 로그에 흘려보낸다. 종료코드가
+// 0이 아니면 실패로 취급 - deploy.py 자체가 "한 단계라도 실패하면 즉시 멈춘다"는
+// 원칙으로 만들어져 있어(README 참고) 여기서도 그대로 따른다.
+function runProcess(cmd, args, cwd) {
+  return new Promise((resolve, reject) => {
+    pushVideoReplaceLog(`$ ${cmd} ${args.join(' ')}`);
+    const proc = spawn(cmd, args, { cwd });
+    const onOutput = (data) => {
+      data.toString().split('\n').filter((line) => line.trim().length > 0)
+        .forEach((line) => pushVideoReplaceLog(line));
+    };
+    proc.stdout.on('data', onOutput);
+    proc.stderr.on('data', onOutput);
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`종료 코드 ${code}`));
+    });
+  });
+}
+
+// 업로드된 영상 하나로 439대 전체를 다시 자르고 배포한다. mode: 'equirect' | 'frontback'.
+// 실패해도 서버는 계속 동작 - videoReplaceState.step='error'로 남아 대시보드에 표시된다.
+async function processVideoReplace(mode, uploadedPath) {
+  videoReplaceState = { step: 'tiles', log: [], error: null };
+  broadcastVideoReplaceState();
+
+  try {
+    const target = VIDEO_REPLACE_TARGET_SIZE[mode];
+    const tilesPath = path.join(SLICER_DIR, 'tiles', `video_replace_${mode}.json`);
+    const tilesArgs = ['gen_tiles.py', 'sphere', '--source', target, '-o', tilesPath];
+    if (mode === 'frontback') tilesArgs.push('--front-back');
+    await runProcess('python3', tilesArgs, SLICER_DIR);
+
+    setVideoReplaceStep('encoding');
+    await runProcess('python3', [
+      'deploy.py',
+      '-i', uploadedPath,
+      '-t', tilesPath,
+      '--ap-count', String(state.deployConfig.apCount),
+      '--base-config', BASE_CONFIG_PATH,
+      '--encoder', 'hevc_nvenc',
+    ], SLICER_DIR);
+
+    setVideoReplaceStep('publish');
+    loadManifest();
+    if (!manifest) throw new Error('deploy.py는 끝났는데 manifest.json을 못 찾았습니다.');
+    const published = publishDeviceConfigs();
+    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
+    pushVideoReplaceLog(`발행 완료 - wall/device ${published}건 + CHECK_UPDATE 브로드캐스트`);
+
+    setVideoReplaceStep('done');
+  } catch (err) {
+    console.error('[HTTP] 영상 교체 실패:', err.message);
+    setVideoReplaceStep('error', err.message);
+  } finally {
+    fs.unlink(uploadedPath, () => {}); // 업로드 임시 파일 정리 - 실패해도 무시
+  }
+}
+
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const videoUpload = multer({
+  dest: UPLOADS_DIR,
+  limits: { fileSize: 8 * 1024 * 1024 * 1024 }, // 8GB - 마스터 영상이 큰 편이라 넉넉히
+});
+
+app.post('/api/video/replace', videoUpload.single('video'), (req, res) => {
+  const mode = req.body && req.body.mode === 'frontback' ? 'frontback' : 'equirect';
+
+  if (!req.file) {
+    res.status(400).json({ ok: false, error: '영상 파일(video)이 필요합니다.' });
+    return;
+  }
+  if (videoReplaceState.step !== 'idle' && videoReplaceState.step !== 'done'
+    && videoReplaceState.step !== 'error'
+  ) {
+    fs.unlink(req.file.path, () => {});
+    res.status(409).json({ ok: false, error: '이미 진행 중인 영상 교체 작업이 있습니다.' });
+    return;
+  }
+
+  console.log(`[HTTP] 영상 교체 시작 - mode=${mode} file=${req.file.originalname} (${req.file.size}B)`);
+  res.json({ ok: true, mode });
+  processVideoReplace(mode, req.file.path);
+});
+
 // 현재 배포된 최신 APK 버전 정보 - 폰은 이걸 직접 쓰지 않고 wall/ota(retain)로 받는다.
 // 디버깅/수동 확인, 그리고 외부 도구에서 최신 버전을 조회할 때 쓴다.
 app.get('/api/app-version', (req, res) => {
@@ -1146,6 +1319,8 @@ httpServer.on('upgrade', (req, socket, head) => {
 wss.on('connection', (ws) => {
   console.log(`[WS] 대시보드 연결 - 현재 접속 수: ${wss.clients.size}`);
   ws.send(buildStatusPayload());
+  // 새로고침/재접속 중에도 진행 중인 영상 교체 작업 상태를 바로 보여준다.
+  ws.send(JSON.stringify({ type: 'VIDEO_REPLACE_PROGRESS', ...videoReplaceState }));
 
   ws.on('close', () => {
     console.log(`[WS] 대시보드 연결 종료 - 현재 접속 수: ${wss.clients.size}`);

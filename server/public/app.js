@@ -57,6 +57,13 @@ const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
 
+const vrApCountEl = document.getElementById('vr-ap-count');
+const btnVrSaveApCount = document.getElementById('btn-vr-save-ap-count');
+const vrFileEl = document.getElementById('vr-file');
+const btnVrStart = document.getElementById('btn-vr-start');
+const vrStatusEl = document.getElementById('vr-status');
+const vrLogEl = document.getElementById('vr-log');
+
 // 패턴/텍스트 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
 let editingTextConfig = false;
@@ -306,6 +313,7 @@ function connect() {
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'STATUS_UPDATE') applyStatusUpdate(data);
+    if (data.type === 'VIDEO_REPLACE_PROGRESS') applyVideoReplaceProgress(data);
   });
 
   ws.addEventListener('close', () => {
@@ -463,6 +471,87 @@ btnRestartAll.addEventListener('click', () => {
 
   fetch('/api/restart-app', { method: 'POST' })
     .catch((err) => console.error('[HTTP] 앱 재시작(전체) 요청 실패', err));
+});
+
+// ── 영상 교체 ──────────────────────────────────────────
+const VR_STEP_LABEL = {
+  idle: '대기 중',
+  tiles: '타일 좌표 생성 중...',
+  encoding: '인코딩 중... (439대 기준 수십 분 걸릴 수 있음)',
+  publish: '배포 발행 중...',
+  done: '완료 - 폰에 발행됨',
+  error: '실패',
+};
+
+// VIDEO_REPLACE_PROGRESS 메시지가 올 때마다(로그 한 줄 늘 때마다 포함) 그대로 다시 그린다 -
+// 로그가 최대 300줄로 서버에서 이미 잘려있어 매번 통째로 다시 그려도 부담 없다.
+function applyVideoReplaceProgress(data) {
+  const step = data.step || 'idle';
+  vrStatusEl.textContent = VR_STEP_LABEL[step] || step;
+  vrStatusEl.className = `video-replace-status step-${step}`;
+  if (data.error) vrStatusEl.textContent += ` - ${data.error}`;
+
+  vrLogEl.textContent = (data.log || []).join('\n');
+  vrLogEl.scrollTop = vrLogEl.scrollHeight;
+
+  const busy = step !== 'idle' && step !== 'done' && step !== 'error';
+  btnVrStart.disabled = busy;
+}
+
+// 페이지 로드 시 저장된 AP 대수를 불러와 입력칸에 채운다.
+fetch('/api/deploy-config')
+  .then((res) => res.json())
+  .then((data) => {
+    if (data.ok && data.deployConfig) vrApCountEl.value = data.deployConfig.apCount;
+  })
+  .catch((err) => console.error('[HTTP] deploy-config 조회 실패', err));
+
+btnVrSaveApCount.addEventListener('click', () => {
+  const apCount = Number(vrApCountEl.value);
+  if (!Number.isInteger(apCount) || apCount < 1) {
+    window.alert('AP 대수는 1 이상의 정수로 입력하세요.');
+    return;
+  }
+  postJson('/api/deploy-config', { apCount })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.ok) window.alert(`저장 실패: ${data.error}`);
+    })
+    .catch((err) => console.error('[HTTP] deploy-config 저장 실패', err));
+});
+
+btnVrStart.addEventListener('click', () => {
+  const file = vrFileEl.files[0];
+  if (!file) {
+    window.alert('영상 파일을 선택하세요.');
+    return;
+  }
+  const mode = document.querySelector('input[name="vr-mode"]:checked').value;
+  const modeLabel = mode === 'frontback' ? '일반(1:1) 전/후면' : '등장방형';
+  if (!window.confirm(`${modeLabel} 모드로 "${file.name}"을(를) 439대 전체에 배포할까요? `
+    + '인코딩에 수십 분이 걸릴 수 있습니다.')) return;
+
+  const formData = new FormData();
+  formData.append('mode', mode);
+  formData.append('video', file);
+
+  btnVrStart.disabled = true;
+  vrStatusEl.textContent = '업로드 중...';
+  vrStatusEl.className = 'video-replace-status step-tiles';
+
+  fetch('/api/video/replace', { method: 'POST', body: formData })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.ok) {
+        window.alert(`시작 실패: ${data.error}`);
+        btnVrStart.disabled = false;
+      }
+      // 성공하면 이후 진행상황은 VIDEO_REPLACE_PROGRESS WebSocket 메시지로 갱신된다.
+    })
+    .catch((err) => {
+      console.error('[HTTP] 영상 교체 요청 실패', err);
+      btnVrStart.disabled = false;
+    });
 });
 
 connect();

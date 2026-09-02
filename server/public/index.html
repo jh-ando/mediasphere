@@ -160,6 +160,30 @@
     </div>
   </section>
 
+  <section class="admin-section video-replace">
+    <h2>영상 교체</h2>
+    <div class="video-replace-row">
+      <label class="pattern-field">
+        AP 대수
+        <input type="number" id="vr-ap-count" min="1" step="1" value="10" />
+      </label>
+      <button id="btn-vr-save-ap-count" class="btn-small">AP 대수 저장</button>
+    </div>
+
+    <div class="video-replace-mode">
+      <label><input type="radio" name="vr-mode" value="equirect" checked /> 등장방형 영상으로 교체 (4096x2048 기준)</label>
+      <label><input type="radio" name="vr-mode" value="frontback" /> 일반(1:1) 영상 - 전/후면 교체 (2160x2160 기준)</label>
+    </div>
+
+    <div class="video-replace-row">
+      <input type="file" id="vr-file" accept="video/*" />
+      <button id="btn-vr-start" class="btn btn-play">교체 시작</button>
+    </div>
+
+    <div id="vr-status" class="video-replace-status">대기 중</div>
+    <pre id="vr-log" class="video-replace-log"></pre>
+  </section>
+
   <main>
     <section class="grid-section">
       <h2>기기 현황</h2>

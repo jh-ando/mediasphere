@@ -267,6 +267,77 @@ body {
   color: #2a0b0b;
 }
 
+.video-replace {
+  align-items: stretch;
+}
+
+.video-replace-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-replace-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+  color: #e6e8eb;
+}
+
+.video-replace-mode label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+#vr-ap-count {
+  background: #12151a;
+  border: 1px solid #2f3542;
+  border-radius: 4px;
+  color: #e6e8eb;
+  padding: 6px 8px;
+  font-size: 13px;
+  width: 90px;
+}
+
+.video-replace-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8b93a1;
+}
+
+.video-replace-status.step-encoding,
+.video-replace-status.step-tiles,
+.video-replace-status.step-publish {
+  color: #f0b429;
+}
+
+.video-replace-status.step-done {
+  color: #3ddc84;
+}
+
+.video-replace-status.step-error {
+  color: #e35d5d;
+}
+
+.video-replace-log {
+  background: #12151a;
+  border: 1px solid #2f3542;
+  border-radius: 4px;
+  padding: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8b93a1;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
 main {
   padding: 0 24px 32px;
   display: flex;

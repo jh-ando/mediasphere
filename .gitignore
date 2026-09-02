@@ -7,3 +7,4 @@ server/data/
 __pycache__/
 *.pyc
 server/distribute/
+pipeline/slicer/tiles/video_replace_*.json
