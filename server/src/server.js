@@ -1160,7 +1160,16 @@ function runProcess(cmd, args, cwd) {
     pushVideoReplaceLog(`$ ${cmd} ${args.join(' ')}`);
     // detached: true (POSIX만) - 이 프로세스가 자기만의 프로세스 그룹 리더가 되어,
     // 취소 시 -pid로 그룹 전체(손자 프로세스인 ffmpeg 포함)를 죽일 수 있다.
-    const proc = spawn(cmd, args, { cwd, detached: process.platform !== 'win32' });
+    // PYTHONUNBUFFERED=1 - slice_video.py의 타일별 진행 로그(print(), stderr가 아니라
+    // stdout이라 파이프로 리다이렉트되면 파이썬이 자동으로 완전 버퍼링으로 바꿔버림)가
+    // 몇 분씩 안 나오다가 한꺼번에 쏟아지는 문제가 있었다 - 실시간으로 안 보이는
+    // 원인이었음. 환경변수는 자식(deploy.py)이 또 띄우는 손자 프로세스(slice_video.py)
+    // 에도 그대로 상속되므로 여기 한 곳에서만 설정하면 전체 파이프라인에 적용된다.
+    const proc = spawn(cmd, args, {
+      cwd,
+      detached: process.platform !== 'win32',
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
     currentChildProcess = proc;
     const onOutput = (data) => {
       data.toString().split('\n').filter((line) => line.trim().length > 0)
@@ -1218,6 +1227,7 @@ async function processVideoReplace(mode, uploadedPath) {
       '--ap-count', String(state.deployConfig.apCount),
       '--base-config', BASE_CONFIG_PATH,
       '--encoder', 'hevc_nvenc',
+      '-j', '10',
     ], SLICER_DIR);
 
     setVideoReplaceStep('publish');
