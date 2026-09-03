@@ -26,6 +26,12 @@ const btnPatternPlay = document.getElementById('btn-pattern-play');
 const btnPatternStop = document.getElementById('btn-pattern-stop');
 const btnSequencePlay = document.getElementById('btn-sequence-play');
 const btnSequenceStop = document.getElementById('btn-sequence-stop');
+const playlistCuesEl = document.getElementById('playlist-cues');
+const btnPlaylistAddCue = document.getElementById('btn-playlist-add-cue');
+const btnPlaylistSave = document.getElementById('btn-playlist-save');
+const btnPlaylistPlay = document.getElementById('btn-playlist-play');
+const btnPlaylistStop = document.getElementById('btn-playlist-stop');
+const playlistStatusEl = document.getElementById('playlist-status');
 const colorSwatchEl = document.getElementById('color-swatch');
 const colorLabelEl = document.getElementById('color-label');
 const btnColorReset = document.getElementById('btn-color-reset');
@@ -61,6 +67,12 @@ let editingTextConfig = false;
 // 들고 있어야 하는데, 이 두 토글은 그 정도로 중요하지 않다고 판단해 단순하게 둠).
 let versionCheckEnabled = false;
 let idShowing = false;
+
+// 재생목록 - 큐 배열은 이 페이지에서 편집하다가 "저장" 눌러야 서버에 반영된다(자동저장 아님).
+// 재생 중에는 서버가 편집을 거부하므로, 여기서도 재생 중엔 입력을 막아 혼란을 방지한다.
+let playlistCues = [];
+let playlistPlaying = false;
+let playlistCurrentCueIndex = -1;
 
 // 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
@@ -258,6 +270,7 @@ function connect() {
     const data = JSON.parse(event.data);
     if (data.type === 'STATUS_UPDATE') applyStatusUpdate(data);
     if (data.type === 'VIDEO_REPLACE_PROGRESS') applyVideoReplaceProgress(data);
+    if (data.type === 'PATTERN_PLAYLIST_PROGRESS') applyPlaylistProgress(data);
   });
 
   ws.addEventListener('close', () => {
@@ -469,5 +482,146 @@ btnVrCancel.addEventListener('click', () => {
     })
     .catch((err) => console.error('[HTTP] 영상 교체 취소 요청 실패', err));
 });
+
+// ── 패턴 재생목록 ──────────────────────────────────────
+// 큐 배열은 이 페이지가 들고 있다가 "저장" 버튼을 눌러야만 서버에 반영된다(입력마다
+// 자동저장 안 함) - 재생목록 편집은 색상/주기 등 즉시발행 필드들과 성격이 달라서
+// (여러 값을 한꺼번에 맞추고 나서 저장하는 게 자연스러움) 별도 흐름으로 뒀다.
+function createCueRow(cue, index) {
+  const row = document.createElement('div');
+  row.className = 'playlist-cue-row';
+  row.dataset.index = String(index);
+
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.value = cue.color;
+  colorInput.addEventListener('input', () => { playlistCues[index].color = colorInput.value; });
+
+  const intervalInput = document.createElement('input');
+  intervalInput.type = 'number';
+  intervalInput.min = '50';
+  intervalInput.step = '50';
+  intervalInput.title = '주기(ms)';
+  intervalInput.value = cue.interval;
+  intervalInput.addEventListener('change', () => { playlistCues[index].interval = Number(intervalInput.value); });
+
+  const durationInput = document.createElement('input');
+  durationInput.type = 'number';
+  durationInput.min = '500';
+  durationInput.step = '500';
+  durationInput.title = '지속시간(ms)';
+  durationInput.value = cue.duration;
+  durationInput.addEventListener('change', () => { playlistCues[index].duration = Number(durationInput.value); });
+
+  const stepDelayInput = document.createElement('input');
+  stepDelayInput.type = 'number';
+  stepDelayInput.min = '0';
+  stepDelayInput.step = '50';
+  stepDelayInput.title = '폰 간 딜레이(ms) - 순차 점멸에만 쓰임';
+  stepDelayInput.value = cue.stepDelay;
+  stepDelayInput.addEventListener('change', () => { playlistCues[index].stepDelay = Number(stepDelayInput.value); });
+
+  const modeSelect = document.createElement('select');
+  modeSelect.innerHTML = '<option value="all">전체 점멸</option><option value="sequence">순차 점멸</option>';
+  modeSelect.value = cue.mode;
+  modeSelect.addEventListener('change', () => { playlistCues[index].mode = modeSelect.value; });
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn-small btn-danger';
+  deleteBtn.textContent = '삭제';
+  deleteBtn.addEventListener('click', () => {
+    playlistCues.splice(index, 1);
+    renderPlaylistCues();
+  });
+
+  const label = document.createElement('span');
+  label.textContent = `#${index + 1}`;
+
+  row.append(label, colorInput, intervalInput, durationInput, stepDelayInput, modeSelect, deleteBtn);
+  return row;
+}
+
+function renderPlaylistCues() {
+  playlistCuesEl.innerHTML = '';
+  if (playlistCues.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'playlist-cue-row';
+    empty.textContent = '큐가 없습니다 - "+ 큐 추가"로 만들어보세요.';
+    playlistCuesEl.appendChild(empty);
+  } else {
+    playlistCues.forEach((cue, index) => {
+      const row = createCueRow(cue, index);
+      if (playlistPlaying && index === playlistCurrentCueIndex) row.classList.add('active');
+      playlistCuesEl.appendChild(row);
+    });
+  }
+  updatePlaylistEditability();
+}
+
+// 재생 중엔 모든 편집 요소(입력/추가/삭제/저장)를 막는다 - 서버도 같은 규칙을
+// /api/pattern/playlist(저장)에서 강제하지만, 여기서도 막아야 헷갈리지 않는다.
+function updatePlaylistEditability() {
+  const disabled = playlistPlaying;
+  playlistCuesEl.querySelectorAll('input, select, button').forEach((el) => { el.disabled = disabled; });
+  btnPlaylistAddCue.disabled = disabled;
+  btnPlaylistSave.disabled = disabled;
+  btnPlaylistPlay.disabled = disabled || playlistCues.length === 0;
+  btnPlaylistStop.disabled = !disabled;
+}
+
+function applyPlaylistProgress(data) {
+  playlistPlaying = Boolean(data.playing);
+  playlistCurrentCueIndex = typeof data.currentCueIndex === 'number' ? data.currentCueIndex : -1;
+
+  playlistStatusEl.textContent = playlistPlaying
+    ? `재생 중 (큐 ${playlistCurrentCueIndex + 1}/${playlistCues.length})`
+    : '재생 안 함';
+  playlistStatusEl.className = playlistPlaying ? 'video-replace-status step-encoding' : 'video-replace-status';
+
+  playlistCuesEl.querySelectorAll('.playlist-cue-row').forEach((row) => {
+    row.classList.toggle('active', playlistPlaying && Number(row.dataset.index) === playlistCurrentCueIndex);
+  });
+  updatePlaylistEditability();
+}
+
+btnPlaylistAddCue.addEventListener('click', () => {
+  playlistCues.push({ color: '#ffffff', interval: 500, duration: 3000, stepDelay: 200, mode: 'all' });
+  renderPlaylistCues();
+});
+
+btnPlaylistSave.addEventListener('click', () => {
+  postJson('/api/pattern/playlist', { cues: playlistCues })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.ok) window.alert(`저장 실패: ${data.error}`);
+    })
+    .catch((err) => console.error('[HTTP] 재생목록 저장 실패', err));
+});
+
+btnPlaylistPlay.addEventListener('click', () => {
+  fetch('/api/pattern/playlist/play', { method: 'POST' })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data.ok) window.alert(`재생 실패: ${data.error}`);
+    })
+    .catch((err) => console.error('[HTTP] 재생목록 재생 요청 실패', err));
+});
+
+btnPlaylistStop.addEventListener('click', () => {
+  fetch('/api/pattern/playlist/stop', { method: 'POST' })
+    .catch((err) => console.error('[HTTP] 재생목록 정지 요청 실패', err));
+});
+
+// 페이지 로드 시 저장된 재생목록/재생상태를 불러온다.
+fetch('/api/pattern/playlist')
+  .then((res) => res.json())
+  .then((data) => {
+    if (!data.ok) return;
+    playlistCues = data.patternPlaylist.cues || [];
+    playlistPlaying = Boolean(data.playlistState && data.playlistState.playing);
+    playlistCurrentCueIndex = data.playlistState ? data.playlistState.currentCueIndex : -1;
+    renderPlaylistCues();
+  })
+  .catch((err) => console.error('[HTTP] 재생목록 조회 실패', err));
 
 connect();

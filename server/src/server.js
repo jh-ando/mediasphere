@@ -36,6 +36,7 @@ const TOTAL_DEVICES = 439; // 구체 배치 위도별 합산 기준 (CLAUDE.md "
 const OFFLINE_TIMEOUT_MS = 10000; // 10초 이상 heartbeat 없으면 offline 처리
 const STATUS_BROADCAST_MS = 1000;
 const PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'pattern-config.json');
+const PATTERN_PLAYLIST_PATH = path.join(__dirname, '..', 'data', 'pattern-playlist.json');
 const TEXT_SCROLL_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-scroll-config.json');
 const TEXT_PATTERN_CONFIG_PATH = path.join(__dirname, '..', 'data', 'text-pattern-config.json');
 // 폐쇄망 로컬 MQTT라 개별 발행(최대 439건)도 통상 수십~수백ms 안에 전달된다 - 1초면
@@ -98,6 +99,13 @@ const state = {
     duration: 3000,
     stepDelay: 200,
   },
+  // 패턴 재생목록 - 큐(cue) 배열을 순서대로 재생한다. 각 큐: { color, interval, duration,
+  // stepDelay, mode: "all"|"sequence" }. duration=0(무한 반복)은 재생목록에서 못 쓴다 -
+  // 서버가 "얼마나 기다렸다가 다음 큐로 넘어갈지"를 알아야 하는데 무한이면 알 수 없다
+  // (POST /api/pattern/playlist에서 검증).
+  patternPlaylist: {
+    cues: [],
+  },
   textScrollConfig: {
     text: 'MediaSphere',
     font: 'sans-serif',
@@ -149,6 +157,31 @@ function loadPatternConfig() {
 }
 
 loadPatternConfig();
+
+// patternPlaylist를 pattern-playlist.json에 저장한다 (POST /api/pattern/playlist 호출 시마다).
+function savePatternPlaylist() {
+  try {
+    fs.mkdirSync(path.dirname(PATTERN_PLAYLIST_PATH), { recursive: true });
+    fs.writeFileSync(PATTERN_PLAYLIST_PATH, JSON.stringify(state.patternPlaylist, null, 2));
+  } catch (err) {
+    console.error('[HTTP] pattern-playlist.json 저장 실패:', err.message);
+  }
+}
+
+// 서버 시작 시 저장된 patternPlaylist가 있으면 불러온다 (loadPatternConfig와 동일 패턴).
+function loadPatternPlaylist() {
+  if (!fs.existsSync(PATTERN_PLAYLIST_PATH)) return;
+
+  try {
+    const loaded = JSON.parse(fs.readFileSync(PATTERN_PLAYLIST_PATH));
+    state.patternPlaylist = { ...state.patternPlaylist, ...loaded };
+    console.log(`[HTTP] pattern-playlist.json 로드 완료 - 큐 ${state.patternPlaylist.cues.length}개`);
+  } catch (err) {
+    console.error('[HTTP] pattern-playlist.json 파싱 실패 - 기본값 유지:', err.message);
+  }
+}
+
+loadPatternPlaylist();
 
 // textScrollConfig를 text-scroll-config.json에 저장한다 (POST /api/text/config 호출 시마다).
 function saveTextScrollConfig() {
@@ -687,6 +720,143 @@ app.post('/api/pattern/stop', (req, res) => {
 
   console.log('[HTTP] 패턴 정지');
   res.json({ success: true });
+});
+
+// ── 패턴 재생목록 (큐를 순서대로 자동 재생) ──────────────
+// 큐마다 이미 있는 PATTERN_START/SEQUENCE_START를 그대로 쏘고, 그 큐가 끝날 시간만큼
+// setTimeout으로 기다렸다가 다음 큐로 넘어간다 - 폰 쪽은 전혀 안 건드려도 된다.
+let playlistState = { playing: false, currentCueIndex: -1 };
+let playlistTimer = null;
+
+function broadcastPlaylistState() {
+  const message = JSON.stringify({ type: 'PATTERN_PLAYLIST_PROGRESS', ...playlistState });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
+// 큐 하나를 시작하고, 그 큐가 끝날 시간을 계산해서 그만큼 뒤에 다음 큐로 넘어간다.
+// sequence 모드는 마지막 폰이 시작하기까지(stepDelay 누적)까지 기다려야 다음 큐와 안 겹친다.
+function runCue(index) {
+  const cues = state.patternPlaylist.cues;
+  if (!playlistState.playing || cues.length === 0) return;
+
+  const cue = cues[index];
+  playlistState.currentCueIndex = index;
+  broadcastPlaylistState();
+
+  const leadMs = 500;
+  let waitMs;
+  if (cue.mode === 'sequence') {
+    const totalDevices = Object.keys(deviceLastSeen).filter((id) => isDeviceOnline(id)).length;
+    publishControl(
+      {
+        type: 'SEQUENCE_START',
+        color: cue.color,
+        interval: cue.interval,
+        duration: cue.duration,
+        stepDelay: cue.stepDelay,
+        startAt: Date.now() + leadMs,
+        totalDevices,
+      },
+      { retain: false },
+    );
+    waitMs = leadMs + Math.max(0, totalDevices - 1) * cue.stepDelay + cue.duration;
+  } else {
+    publishControl(
+      { type: 'PATTERN_START', color: cue.color, interval: cue.interval, duration: cue.duration, startAt: Date.now() + leadMs },
+      { retain: false },
+    );
+    waitMs = leadMs + cue.duration;
+  }
+
+  console.log(`[HTTP] 재생목록 큐 ${index + 1}/${cues.length} 시작 - mode=${cue.mode} waitMs=${waitMs}`);
+  playlistTimer = setTimeout(() => {
+    if (!playlistState.playing) return;
+    const nextIndex = index + 1 >= cues.length ? 0 : index + 1; // 마지막 큐 다음엔 처음부터 반복
+    runCue(nextIndex);
+  }, waitMs);
+}
+
+function stopPlaylist() {
+  if (playlistTimer) {
+    clearTimeout(playlistTimer);
+    playlistTimer = null;
+  }
+  playlistState = { playing: false, currentCueIndex: -1 };
+  publishControl({ type: 'PATTERN_STOP' }, { retain: false });
+  publishControl({ type: 'SEQUENCE_STOP' }, { retain: false });
+  broadcastPlaylistState();
+}
+
+// 재생목록 조회/저장. 재생 중에는 저장을 막는다(재생 중 편집 금지) - 재생목록이 도는
+// 동안 배열이 바뀌면 지금 어느 인덱스를 재생 중인지 의미가 깨지기 때문.
+app.get('/api/pattern/playlist', (req, res) => {
+  res.json({ ok: true, patternPlaylist: state.patternPlaylist, playlistState });
+});
+
+app.post('/api/pattern/playlist', (req, res) => {
+  if (playlistState.playing) {
+    res.status(409).json({ ok: false, error: '재생 중에는 재생목록을 수정할 수 없습니다. 먼저 정지하세요.' });
+    return;
+  }
+
+  const { cues } = req.body || {};
+  if (!Array.isArray(cues)) {
+    res.status(400).json({ ok: false, error: 'cues는 배열이어야 합니다.' });
+    return;
+  }
+
+  for (const [i, cue] of cues.entries()) {
+    if (!HEX_COLOR_RE.test(cue.color || '')) {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: color가 #RRGGBB 형식이 아닙니다.` });
+      return;
+    }
+    if (!Number.isFinite(cue.interval) || cue.interval <= 0) {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: interval은 0보다 큰 숫자여야 합니다.` });
+      return;
+    }
+    if (!Number.isFinite(cue.duration) || cue.duration <= 0) {
+      // duration=0(무한 반복)은 PATTERN_START 단독 실행에서나 되는 얘기다 - 재생목록은
+      // "이 큐가 언제 끝나는지"를 알아야 다음 큐로 자동으로 넘어갈 수 있어서 못 쓴다.
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: duration은 0보다 큰 숫자여야 합니다(재생목록은 무한 반복 큐를 지원하지 않습니다).` });
+      return;
+    }
+    if (!Number.isFinite(cue.stepDelay) || cue.stepDelay < 0) {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: stepDelay는 0 이상 숫자여야 합니다.` });
+      return;
+    }
+    if (cue.mode !== 'all' && cue.mode !== 'sequence') {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: mode는 "all" 또는 "sequence"여야 합니다.` });
+      return;
+    }
+  }
+
+  state.patternPlaylist.cues = cues;
+  savePatternPlaylist();
+
+  console.log(`[HTTP] 재생목록 저장 - 큐 ${cues.length}개`);
+  res.json({ ok: true, patternPlaylist: state.patternPlaylist });
+});
+
+app.post('/api/pattern/playlist/play', (req, res) => {
+  if (state.patternPlaylist.cues.length === 0) {
+    res.status(400).json({ ok: false, error: '재생목록이 비어 있습니다.' });
+    return;
+  }
+  if (playlistTimer) clearTimeout(playlistTimer);
+  playlistState = { playing: true, currentCueIndex: -1 };
+
+  console.log('[HTTP] 재생목록 재생 시작');
+  runCue(0);
+  res.json({ ok: true });
+});
+
+app.post('/api/pattern/playlist/stop', (req, res) => {
+  stopPlaylist();
+
+  console.log('[HTTP] 재생목록 정지');
+  res.json({ ok: true });
 });
 
 // 텍스트 스크롤 설정 저장 (발행하지 않음 - TEXT_SCROLL 시점에 이 값을 사용한다)
@@ -1332,6 +1502,7 @@ wss.on('connection', (ws) => {
   ws.send(buildStatusPayload());
   // 새로고침/재접속 중에도 진행 중인 영상 교체 작업 상태를 바로 보여준다.
   ws.send(JSON.stringify({ type: 'VIDEO_REPLACE_PROGRESS', ...videoReplaceState }));
+  ws.send(JSON.stringify({ type: 'PATTERN_PLAYLIST_PROGRESS', ...playlistState }));
 
   ws.on('close', () => {
     console.log(`[WS] 대시보드 연결 종료 - 현재 접속 수: ${wss.clients.size}`);
