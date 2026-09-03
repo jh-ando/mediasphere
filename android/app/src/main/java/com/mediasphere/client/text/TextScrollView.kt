@@ -296,10 +296,19 @@ class TextScrollView(context: Context, attrs: AttributeSet? = null) : View(conte
             // 실제로는 바로 옆인데도 그렇게 되어 이음매를 지날 때마다 화면이 비어보였다
             // (연속 회전 버그, 2026-09). gridWidthPx를 기준으로 순환 정규화해서 "원 위의
             // 최단 거리"로 바꾸면 이음매 양쪽 폰이 항상 정확히 가까운 쪽으로 계산된다.
+            //
+            // 대표값을 고르는 경계선은 gridWidthPx/2(원둘레 절반) 고정이 아니라 blockWidth
+            // 기준으로 잡아야 한다 - 텍스트 블록 폭이 원둘레의 절반을 넘어가면(긴 텍스트를
+            // 크게 표시할 때), 그 절반을 넘어서는 뒷부분을 보여줘야 하는 폰들의 정답 위치가
+            // (-gridWidthPx/2, gridWidthPx/2] 범위 밖에 있는데 고정 경계선이 그걸 억지로
+            // 범위 안의 엉뚱한 값으로 바꿔버려서, 블록 뒷부분이 그 어떤 폰에서도 절대 안
+            // 그려지는 문제가 있었다(예: "ANDO" 5글자 확대 시 뒤쪽 글자가 통째로 안 보임,
+            // 2026-09). 경계선을 "텍스트가 절대 안 보이는 위치"(블록 반대편)로 옮기면
+            // 해결된다 - blockWidth+화면폭이 원둘레보다 훨씬 작다는 전제 하에 안전하다.
             val devicePos = (p.myLon / 360.0) * gridWidthPx
             val raw = originX - devicePos
             var wrapped = (raw % gridWidthPx + gridWidthPx) % gridWidthPx // [0, gridWidthPx)
-            if (wrapped > gridWidthPx / 2) wrapped -= gridWidthPx // (-gridWidthPx/2, gridWidthPx/2]
+            if (wrapped >= gridWidthPx - blockWidth - width) wrapped -= gridWidthPx
             wrapped.toFloat()
         } else {
             originX - (p.myCol * pitchW) - (pitchW - width) / 2f
