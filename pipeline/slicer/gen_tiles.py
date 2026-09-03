@@ -93,7 +93,7 @@ def gen_flat(src_w, src_h, cols, rows, gap_ratio_x, gap_ratio_y, order):
 
 # ---------------------------------------------------------------- 구체 레이아웃
 
-def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin, front_back=False):
+def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin, front_back=False, lon_offset=0.0):
     """
     등장방형 원본에서 각 폰의 위도/경도 구간을 직사각형으로 잘라낸다.
 
@@ -111,6 +111,14 @@ def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin, front_back=F
     위도 ±64.29/±38.57)은 절반씩 다른 매핑이 필요한데, 이번 라운드는 단순
     crop 하나로 처리하고 이음매 부분의 미세한 왜곡은 감수하기로 함(실기기
     확인 후 필요하면 등장방형의 wrap 타일처럼 hflip+hstack으로 보정 예정).
+
+    lon_offset: 설치 하드웨어가 물리적으로 어긋나 있을 때 "영상이 어느 방향을
+    비추는지"만 보정하는 값(도). content_lon = (물리 경도 + lon_offset) % 360을
+    영상 샘플링(cx/전후면 반구 판정)에만 쓰고, meta에 저장하는 lon(텍스트 스크롤,
+    gapRatio 등 다른 기능이 쓰는 실제 물리 경도)은 그대로 둔다 - 폰 배치 자체가
+    아니라 영상 콘텐츠 방향만 돌리는 보정이라서다. 예) lon_offset=22.5면 물리
+    경도 0도 폰이 원래 22.5도이던 콘텐츠를 보여주게 된다(영상을 -22.5도 회전한
+    것과 같은 효과).
     """
     sw_mm, sh_mm = screen_mm()
     sw_mm *= (1.0 + margin)
@@ -155,17 +163,19 @@ def gen_sphere(src_w, src_h, radius_mm, rows_spec, stagger, margin, front_back=F
         for i in range(count):
             n += 1
             lon = (lon_step * i + lon_off) % 360.0
+            # 영상 샘플링에만 쓰는 값 - meta에 저장하는 lon(물리 경도)은 그대로 둔다.
+            content_lon = (lon + lon_offset) % 360.0
 
             if front_back:
-                if 90.0 <= lon <= 270.0:
-                    local_lon = 180.0 - lon
+                if 90.0 <= content_lon <= 270.0:
+                    local_lon = 180.0 - content_lon
                     hemisphere = "back"
                 else:
-                    local_lon = lon if lon <= 90.0 else lon - 360.0
+                    local_lon = content_lon if content_lon <= 90.0 else content_lon - 360.0
                     hemisphere = "front"
                 cx = (local_lon + 90.0) * ppd_x
             else:
-                cx = lon * ppd_x
+                cx = content_lon * ppd_x
 
             cy = (90.0 - lat) * ppd_y
             x = int(round(cx - tile_w / 2))
@@ -269,6 +279,10 @@ def main():
     s.add_argument("--front-back", action="store_true",
                    help="등장방형이 아니라 일반 영상 한 장을 전/후면에 미러링해서 씌우는 "
                         "모드. --source는 1:1 정사각이어야 함(2:1 원본이면 중앙 크롭 후 사용)")
+    s.add_argument("--lon-offset", type=float, default=0.0,
+                   help="설치 하드웨어가 물리적으로 어긋나 있을 때 영상이 비추는 방향만 "
+                        "보정(도). 폰 배치(lon)는 안 바뀌고 영상 샘플링 좌표에만 적용됨 "
+                        "(예: 22.5 = 영상을 -22.5도 회전한 것과 같은 효과)")
 
     a = ap.parse_args()
     out_w, out_h = parse_wh(a.output)
@@ -308,7 +322,7 @@ def main():
         rows_spec = SPHERE_ROWS
         if a.rows_file:
             rows_spec = [tuple(r) for r in json.load(open(a.rows_file))]
-        tiles = gen_sphere(src_w, src_h, a.radius, rows_spec, a.stagger, a.margin, a.front_back)
+        tiles = gen_sphere(src_w, src_h, a.radius, rows_spec, a.stagger, a.margin, a.front_back, a.lon_offset)
         projection = "frontback-mirror" if a.front_back else "equirect"
 
     # gap: 폰 화면 대비 실제 물리 간격(피치) 비율. 텍스트 스크롤이 폰 사이 여백까지

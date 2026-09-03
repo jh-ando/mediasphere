@@ -73,6 +73,10 @@ const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 // 자동으로 중앙 크롭+스케일 처리하므로(--fit crop 기본값) 여기서 별도 리사이즈는 안 한다.
 const VIDEO_REPLACE_TARGET_SIZE = { equirect: '4096x2048', frontback: '2160x2160' };
 const VIDEO_REPLACE_AP_COUNT = 10; // 현장 AP 대수 고정값 - 안 바뀌므로 UI에서 입력받지 않음
+// 설치 하드웨어가 물리적으로 어긋나 있어서 영상이 비추는 방향을 보정하는 값(도) -
+// gen_tiles.py --lon-offset 참고. 폰 배치(lon)는 안 바뀌고 영상 콘텐츠 방향만 돌아간다.
+// 설치 구조가 바뀌지 않는 한 항상 같은 값이라 UI 입력 없이 상수로 고정.
+const VIDEO_REPLACE_LON_OFFSET_DEG = 22.5;
 
 // ── APK 배포(OTA) 경로 ────────────────────────────────
 // scripts/publish-apk.js가 APK를 넣고 이 파일을 갱신하는 것을 전제로 한다.
@@ -1345,7 +1349,10 @@ async function processVideoReplace(mode, uploadedPath) {
   try {
     const target = VIDEO_REPLACE_TARGET_SIZE[mode];
     const tilesPath = path.join(SLICER_DIR, 'tiles', `video_replace_${mode}.json`);
-    const tilesArgs = ['gen_tiles.py', 'sphere', '--source', target, '-o', tilesPath];
+    const tilesArgs = [
+      'gen_tiles.py', 'sphere', '--source', target, '-o', tilesPath,
+      '--lon-offset', String(VIDEO_REPLACE_LON_OFFSET_DEG),
+    ];
     if (mode === 'frontback') tilesArgs.push('--front-back');
     await runProcess('python3', tilesArgs, SLICER_DIR);
 
