@@ -3,6 +3,7 @@ package com.mediasphere.client.pattern
 import android.animation.ValueAnimator
 import android.util.Log
 import android.view.View
+import com.mediasphere.client.sync.TimeSyncManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,8 +29,12 @@ object PatternAnimator {
         viewRef = WeakReference(view)
     }
 
-    // duration이 0이면 무한 반복, 0보다 크면 그 시간 뒤 자동으로 stop()되며 마지막 상태를 유지한다.
-    fun startBlink(color: Int, interval: Long, duration: Long) {
+    // stopAtEpochMs가 null이면 무한 반복, 값이 있으면 그 절대 시각(TimeSyncManager 기준)에
+    // 자동으로 stop()되며 마지막 상태를 유지한다. 상대 시간(duration)이 아니라 절대 시각을
+    // 받는 이유 - 순차 점멸처럼 폰마다 시작 시각이 다른 경우, "내가 시작한 뒤로 얼마나"가
+    // 아니라 "다 같이 언제 끝나는지"를 기준으로 삼아야 먼저 시작한 폰이 큐가 끝나기도 전에
+    // 먼저 꺼지는 문제가 없다(순차 점멸 지속시간 의미 수정, 2026-09).
+    fun startBlink(color: Int, interval: Long, stopAtEpochMs: Long?) {
         stop()
 
         val view = viewRef?.get()
@@ -50,11 +55,12 @@ object PatternAnimator {
         animator = valueAnimator
         valueAnimator.start()
 
-        Log.d(TAG, "점멸 시작 - color=#${Integer.toHexString(color)}, interval=${interval}ms, duration=${duration}ms")
+        Log.d(TAG, "점멸 시작 - color=#${Integer.toHexString(color)}, interval=${interval}ms, stopAt=$stopAtEpochMs")
 
-        if (duration > 0) {
+        if (stopAtEpochMs != null) {
+            val delayMs = stopAtEpochMs - TimeSyncManager.now()
             stopTimeoutJob = scope.launch {
-                delay(duration)
+                if (delayMs > 0) delay(delayMs)
                 stop()
                 Log.d(TAG, "지속시간 종료로 점멸 자동 정지")
             }

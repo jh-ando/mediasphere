@@ -561,7 +561,11 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
             TextPatternAnimator.stop()
-            PatternAnimator.startBlink(color, message.interval, message.duration)
+            // duration=0(무한)이 아니면 "시작 시각 + 지속시간"을 절대 종료 시각으로 넘긴다 -
+            // 전체 점멸은 모든 폰이 동시에 시작하므로 상대/절대가 같은 값이라 동작은 그대로다
+            // (SequenceStart 쪽과 계산 방식을 통일하기 위한 변경, 2026-09).
+            val stopAt = if (message.duration > 0) message.startAt + message.duration else null
+            PatternAnimator.startBlink(color, message.interval, stopAt)
         }
     }
 
@@ -600,8 +604,13 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
             TextPatternAnimator.stop()
-            PatternAnimator.startBlink(color, message.interval, message.duration)
-            Log.d(PATTERN_TAG, "순차 점멸 시작 - deviceId=$deviceId, myStartAt=$myStartAt")
+            // duration=0(무한)이 아니면 "그룹 시작 시각(message.startAt) + 큐 전체 지속시간"을
+            // 절대 종료 시각으로 넘긴다 - 내가 시작한 뒤로부터가 아니라 전 폰이 공유하는 절대
+            // 시각 기준이라, 일찍 시작한 폰이 큐가 끝나기도 전에 먼저 꺼지지 않는다
+            // (순차 점멸 지속시간 의미 수정, 2026-09).
+            val stopAt = if (message.duration > 0) message.startAt + message.duration else null
+            PatternAnimator.startBlink(color, message.interval, stopAt)
+            Log.d(PATTERN_TAG, "순차 점멸 시작 - deviceId=$deviceId, myStartAt=$myStartAt, stopAt=$stopAt")
         }
     }
 
