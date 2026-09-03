@@ -16,6 +16,7 @@ const btnStop = document.getElementById('btn-stop');
 const modeVideoBtn = document.getElementById('mode-video');
 const modePatternBtn = document.getElementById('mode-pattern');
 const modeTextBtn = document.getElementById('mode-text');
+const btnIdle = document.getElementById('btn-idle');
 const videoControlsEl = document.getElementById('video-controls');
 const patternControlsEl = document.getElementById('pattern-controls');
 const patternColorEl = document.getElementById('pattern-color');
@@ -301,6 +302,12 @@ modePatternBtn.addEventListener('click', () => {
 
 modeTextBtn.addEventListener('click', () => {
   postJson('/api/mode', { mode: 'text' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
+});
+
+// 절전 모드는 별도 상태가 아니라 패턴 모드로 전환하는 편의 버튼이라, 눌러도 이 버튼
+// 자체는 활성 표시를 갖지 않는다 - STATUS_UPDATE가 오면 패턴 모드 탭이 활성화되어 보인다.
+btnIdle.addEventListener('click', () => {
+  fetch('/api/idle', { method: 'POST' }).catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
 });
 
 [patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl].forEach((el) => {

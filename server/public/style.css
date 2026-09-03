@@ -129,6 +129,16 @@ body {
   color: #e6e8eb;
 }
 
+/* 절전 모드는 탭(상태)이 아니라 원샷 버튼이라 active 표시를 갖지 않는다 - 색만 살짝 구분 */
+.mode-btn.btn-idle {
+  margin-left: auto;
+  color: #6b7280;
+}
+
+.mode-btn.btn-idle:hover {
+  color: #9aa1ad;
+}
+
 .control-group {
   display: flex;
   flex-wrap: wrap;

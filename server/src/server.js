@@ -727,6 +727,22 @@ app.post('/api/mode', (req, res) => {
   res.json({ success: true, state });
 });
 
+// 절전 모드: 대시보드 전용 편의 버튼 - 새 기능이 아니라 기존 패턴 모드로 전환하는 것뿐이다.
+// 재생목록이 돌고 있었으면 멈추고 MODE_PATTERN만 보낸다 - handleModePattern()이 어떤
+// 이전 모드(영상/텍스트/점멸/컬러오버레이)에서 오든 전부 정리하고 검은 화면으로
+// 만들어주므로 이거 하나로 충분하다. 화면이 꺼지는 건 아니고(잠금/절전 비활성화는
+// 동기화 때문에 유지) 검은 화면을 계속 띄우는 것 - AMOLED라 검은 픽셀은 꺼진 것과
+// 같아 화면 마모/번인 걱정은 없다.
+app.post('/api/idle', (req, res) => {
+  if (playlistState.playing) stopPlaylist();
+
+  state.currentMode = 'pattern';
+  publishControl({ type: MODE_MQTT_TYPES.pattern });
+
+  console.log('[HTTP] 절전 모드 전환 - 화면 검게');
+  res.json({ success: true, state });
+});
+
 // 패턴 설정 저장 (발행하지 않음 - PATTERN_START 시점에 이 값을 사용한다)
 app.post('/api/pattern/config', (req, res) => {
   const { color, interval, duration, stepDelay } = req.body;
