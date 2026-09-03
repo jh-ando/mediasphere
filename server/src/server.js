@@ -748,20 +748,31 @@ function runCue(index) {
   const leadMs = 500;
   let waitMs;
   if (cue.mode === 'sequence') {
+    // cue.duration은 "이 큐 전체가 순차점멸로 지속되는 총 시간"으로 받는다 - 폰
+    // 개별 duration이 아니다. SEQUENCE_START의 duration은 원래 "그 폰이 시작한
+    // 뒤로 얼마나 오래 깜빡이는지"라서, 그대로 넘기면 마지막 폰은 (totalDevices-1)
+    // *stepDelay만큼 늦게 시작해서 그만큼 더 오래 깜빡이게 되어 큐 전체 길이가
+    // 사용자가 지정한 duration보다 훨씬 길어지는 문제가 있었다. 그래서 폰에 보낼
+    // per-device duration은 역산한다: 전체 지속시간에서 마지막 폰 시작 지연을 뺀
+    // 나머지. 이 값이 너무 작아지면(폰 수*stepDelay가 duration보다 크면) 최소
+    // interval만큼은 보장한다 - 0 이하를 보내면 폰이 "무한 반복"으로 해석하는
+    // 기존 관례(PATTERN_START와 동일)와 충돌하기 때문에 절대 0 이하로 내려가면 안 된다.
     const totalDevices = Object.keys(deviceLastSeen).filter((id) => isDeviceOnline(id)).length;
+    const lastDeviceOffset = Math.max(0, totalDevices - 1) * cue.stepDelay;
+    const perDeviceDuration = Math.max(cue.interval, cue.duration - lastDeviceOffset);
     publishControl(
       {
         type: 'SEQUENCE_START',
         color: cue.color,
         interval: cue.interval,
-        duration: cue.duration,
+        duration: perDeviceDuration,
         stepDelay: cue.stepDelay,
         startAt: Date.now() + leadMs,
         totalDevices,
       },
       { retain: false },
     );
-    waitMs = leadMs + Math.max(0, totalDevices - 1) * cue.stepDelay + cue.duration;
+    waitMs = leadMs + lastDeviceOffset + perDeviceDuration;
   } else {
     publishControl(
       { type: 'PATTERN_START', color: cue.color, interval: cue.interval, duration: cue.duration, startAt: Date.now() + leadMs },

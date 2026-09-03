@@ -62,6 +62,14 @@
 
       <div class="playlist-section">
         <h3>재생목록</h3>
+        <div class="playlist-cue-header">
+          <span class="playlist-col-index">#</span>
+          <span class="playlist-col-color">색상</span>
+          <span class="playlist-col-num">주기(ms)</span>
+          <span class="playlist-col-num" title="순차 점멸은 폰 한 대가 아니라 이 큐 전체가 지속되는 총 시간입니다">지속시간(ms)</span>
+          <span class="playlist-col-num" title="폰 간 딜레이(ms) - 순차 점멸 전용">딜레이(ms)</span>
+          <span class="playlist-col-mode">모드</span>
+        </div>
         <div id="playlist-cues" class="playlist-cues"></div>
         <div class="video-replace-row">
           <button id="btn-playlist-add-cue" class="btn-small">+ 큐 추가</button>

@@ -393,6 +393,45 @@ body {
   height: 24px;
 }
 
+.playlist-cue-row select {
+  width: 90px;
+}
+
+.playlist-cue-row > span:first-child {
+  width: 20px;
+  text-align: right;
+}
+
+/* 재생목록 표 헤더 - 아래 .playlist-cue-row와 같은 flex/gap/열 너비를 써야
+   열이 정확히 맞아떨어진다(색상/주기/지속시간/딜레이/모드). */
+.playlist-cue-header {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: #8b93a1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.playlist-col-index {
+  width: 20px;
+  text-align: right;
+}
+
+.playlist-col-color {
+  width: 32px;
+}
+
+.playlist-col-num {
+  width: 70px;
+}
+
+.playlist-col-mode {
+  width: 90px;
+}
+
 main {
   padding: 0 24px 32px;
   display: flex;

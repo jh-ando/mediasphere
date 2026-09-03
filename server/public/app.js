@@ -509,7 +509,7 @@ function createCueRow(cue, index) {
   durationInput.type = 'number';
   durationInput.min = '500';
   durationInput.step = '500';
-  durationInput.title = '지속시간(ms)';
+  durationInput.title = '지속시간(ms) - 순차 점멸은 폰 한 대가 아니라 이 큐 전체가 지속되는 총 시간';
   durationInput.value = cue.duration;
   durationInput.addEventListener('change', () => { playlistCues[index].duration = Number(durationInput.value); });
 
