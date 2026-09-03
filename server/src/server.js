@@ -643,11 +643,50 @@ app.use('/apk', express.static(APK_DIR));
 // /api/play(대시보드)와 playbackWss(외부 재생 신호 WebSocket)가 공유한다 - 로깅은
 // 호출부마다 다르게 남기고 싶어서 여기엔 안 넣는다.
 function triggerPlay() {
+  // 패턴/텍스트 모드 중이었어도 영상이 화면에 보이도록 먼저 영상 모드로 전환한다 -
+  // MODE_VIDEO 수신 시 Android가 패턴/텍스트를 크로스페이드로 정리하고 영상을 보여주는
+  // 동안(handleModeVideo()), PLAY는 그 타이밍 그대로 바로 시작해서 재생 시점 자체는
+  // 안 밀린다(화면 전환만 부드럽게 겹쳐 보임). 이미 영상 모드였으면 별다른 변화 없이
+  // 그냥 다시 같은 모드로 전환하는 것뿐이라 안전하다.
+  state.currentMode = 'video';
+  publishControl({ type: MODE_MQTT_TYPES.video });
+
   state.isPlaying = true;
   state.startAt = Date.now();
   tickCount = 0;
   publishControl({ type: 'PLAY', startAt: state.startAt });
   return state.startAt;
+}
+
+// 패턴/텍스트 모드에서 PLAY_TRIGGER로 영상 모드에 들어온 경우, 영상 길이만큼 뒤에
+// 원래 있던 모드로 복귀시키고 처음부터 다시 재생한다("1회 재생 후 복귀"). 영상
+// 모드에서 온 PLAY_TRIGGER는 이 함수 자체를 안 타므로 평소처럼 계속 반복 재생된다
+// (playbackWss 핸들러에서 previousMode==='video'면 호출 안 함).
+async function scheduleReturnFromOneShotPlay(previousMode) {
+  let durationMs;
+  try {
+    durationMs = await getVideoDurationMs();
+  } catch (err) {
+    console.error('[HTTP] 영상 길이 확인 실패 - 원래 모드로 자동 복귀를 생략합니다:', err.message);
+    return;
+  }
+
+  // 재생목록이 돌고 있었다면 먼저 정지 - 안 그러면 영상이 재생되는 동안에도 뒤에서
+  // 계속 큐가 넘어가다가, 복귀 시점에 큐 0번을 또 새로 시작해서 타이머가 꼬인다.
+  if (playlistState.playing) stopPlaylist();
+
+  setTimeout(() => {
+    state.currentMode = previousMode;
+    publishControl({ type: MODE_MQTT_TYPES[previousMode] });
+    try {
+      if (previousMode === 'pattern') startPlaylist();
+      else if (previousMode === 'text') startTextScroll();
+    } catch (err) {
+      // 재생목록이 비어있거나 manifest가 없는 등 - 모드 전환 자체는 됐으니 로그만 남긴다.
+      console.error(`[HTTP] 1회 재생 후 ${previousMode} 모드 복귀 재시작 실패:`, err.message);
+    }
+    console.log(`[HTTP] PLAY_TRIGGER 1회 재생 종료 - ${previousMode} 모드로 복귀`);
+  }, durationMs);
 }
 
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
@@ -731,6 +770,10 @@ app.post('/api/pattern/stop', (req, res) => {
 // setTimeout으로 기다렸다가 다음 큐로 넘어간다 - 폰 쪽은 전혀 안 건드려도 된다.
 let playlistState = { playing: false, currentCueIndex: -1 };
 let playlistTimer = null;
+// 큐 전환이 너무 갑작스러워서, 지속시간이 끝나면 폰이 이 시간만큼 서서히 어두워진 뒤
+// 정지한다(PatternAnimator.fadeOutThenStop) - 다음 큐 시작을 그만큼 늦춰야 페이드아웃이
+// 다 끝난 뒤에 새 큐가 시작된다. Android의 같은 이름 상수와 반드시 같은 값을 써야 한다.
+const FADE_OUT_MS = 500;
 
 function broadcastPlaylistState() {
   const message = JSON.stringify({ type: 'PATTERN_PLAYLIST_PROGRESS', ...playlistState });
@@ -773,13 +816,13 @@ function runCue(index) {
       },
       { retain: false },
     );
-    waitMs = leadMs + cue.duration;
+    waitMs = leadMs + cue.duration + FADE_OUT_MS;
   } else {
     publishControl(
       { type: 'PATTERN_START', color: cue.color, interval: cue.interval, duration: cue.duration, startAt: Date.now() + leadMs },
       { retain: false },
     );
-    waitMs = leadMs + cue.duration;
+    waitMs = leadMs + cue.duration + FADE_OUT_MS;
   }
 
   console.log(`[HTTP] 재생목록 큐 ${index + 1}/${cues.length} 시작 - mode=${cue.mode} waitMs=${waitMs}`);
@@ -851,17 +894,26 @@ app.post('/api/pattern/playlist', (req, res) => {
   res.json({ ok: true, patternPlaylist: state.patternPlaylist });
 });
 
-app.post('/api/pattern/playlist/play', (req, res) => {
+// 큐 0번부터(처음부터) 재생목록을 시작한다 - /api/pattern/playlist/play와 PLAY_TRIGGER의
+// "패턴/텍스트 모드에서 영상 1회 재생 후 복귀" 흐름이 이 함수를 공유한다.
+function startPlaylist() {
   if (state.patternPlaylist.cues.length === 0) {
-    res.status(400).json({ ok: false, error: '재생목록이 비어 있습니다.' });
-    return;
+    throw new Error('재생목록이 비어 있습니다.');
   }
   if (playlistTimer) clearTimeout(playlistTimer);
   playlistState = { playing: true, currentCueIndex: -1 };
 
   console.log('[HTTP] 재생목록 재생 시작');
   runCue(0);
-  res.json({ ok: true });
+}
+
+app.post('/api/pattern/playlist/play', (req, res) => {
+  try {
+    startPlaylist();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
 });
 
 app.post('/api/pattern/playlist/stop', (req, res) => {
@@ -891,15 +943,13 @@ app.post('/api/text/config', (req, res) => {
 // 텍스트 스크롤 시작 - manifest의 row별 디바이스 수(rowCounts)를 계산해서 함께 발행한다.
 // 각 폰은 자기 row/col(config.json에 배포 시점에 저장돼 있음)과 이 rowCounts를 가지고
 // 전체 배너 중 자기 몫만 그린다.
-app.post('/api/text/start', (req, res) => {
+// TEXT_SCROLL을 새 startAt으로(처음부터) 발행한다 - /api/text/start와 PLAY_TRIGGER의
+// "패턴/텍스트 모드에서 영상 1회 재생 후 복귀" 흐름이 이 함수를 공유한다.
+function startTextScroll() {
   const rowCounts = computeRowCounts();
   if (!rowCounts) {
-    res.status(400).json({
-      ok: false,
-      error: 'manifest가 없거나 devices[].meta.row 정보가 없습니다 - '
-        + 'deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.',
-    });
-    return;
+    throw new Error('manifest가 없거나 devices[].meta.row 정보가 없습니다 - '
+      + 'deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.');
   }
 
   const cfg = state.textScrollConfig;
@@ -926,7 +976,16 @@ app.post('/api/text/start', (req, res) => {
   publishControl(message, { retain: false });
 
   console.log(`[HTTP] 텍스트 스크롤 시작 - totalRows=${rowCounts.length} direction=${cfg.direction}`);
-  res.json({ ok: true, ...message });
+  return message;
+}
+
+app.post('/api/text/start', (req, res) => {
+  try {
+    const message = startTextScroll();
+    res.json({ ok: true, ...message });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
 });
 
 app.post('/api/text/stop', (req, res) => {
@@ -1266,6 +1325,48 @@ const VIDEO_REPLACE_LOG_MAX_LINES = 300;
 let currentChildProcess = null;
 let cancelRequested = false;
 
+// ── 영상 길이 확인 (PLAY_TRIGGER 1회 재생용) ──────────────
+// 서버는 평소엔 영상 길이를 전혀 모른다(반복 재생은 폰이 자기 player.duration으로
+// 로컬 계산) - 패턴/텍스트 모드에서 PLAY_TRIGGER로 영상 1회만 보여주고 원래 모드로
+// 복귀시키려면, "1바퀴가 언제 끝나는지" 서버가 타이머로 알고 있어야 한다. manifest의
+// 대표 영상 파일 하나를 ffprobe로 재서 캐시해두고, 영상 교체가 새로 일어나면 버린다.
+let cachedVideoDurationMs = null;
+
+function probeVideoDurationMs(filePath) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', filePath,
+    ]);
+    let out = '';
+    proc.stdout.on('data', (data) => { out += data.toString(); });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe 종료 코드 ${code}`));
+        return;
+      }
+      const seconds = parseFloat(out.trim());
+      if (!Number.isFinite(seconds)) {
+        reject(new Error(`ffprobe 출력 파싱 실패: ${out.trim()}`));
+        return;
+      }
+      resolve(Math.round(seconds * 1000));
+    });
+  });
+}
+
+async function getVideoDurationMs() {
+  if (cachedVideoDurationMs !== null) return cachedVideoDurationMs;
+  if (!manifest || !manifest.devices || manifest.devices.length === 0) {
+    throw new Error('manifest가 없어 영상 길이를 확인할 수 없습니다 - 영상 교체를 먼저 실행하세요.');
+  }
+  const sampleFile = path.join(VIDEOS_DIR, manifest.devices[0].videoFile);
+  cachedVideoDurationMs = await probeVideoDurationMs(sampleFile);
+  console.log(`[HTTP] 영상 길이 확인 - ${cachedVideoDurationMs}ms (${sampleFile})`);
+  return cachedVideoDurationMs;
+}
+
 function pushVideoReplaceLog(line) {
   console.log(`[영상교체] ${line}`); // 대시보드를 안 열어도 서버 터미널에서 볼 수 있게
   videoReplaceState.log.push(line);
@@ -1373,6 +1474,10 @@ async function processVideoReplace(mode, uploadedPath) {
     const published = publishDeviceConfigs();
     publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
     pushVideoReplaceLog(`발행 완료 - wall/device ${published}건 + CHECK_UPDATE 브로드캐스트`);
+
+    // 새 영상으로 바뀌었으니 캐시해둔 길이(있었다면)는 버린다 - 다음에 필요할 때
+    // (PLAY_TRIGGER 1회 재생 등) 새 영상으로 다시 잰다.
+    cachedVideoDurationMs = null;
 
     setVideoReplaceStep('done');
   } catch (err) {
@@ -1544,9 +1649,17 @@ playbackWss.on('connection', (ws) => {
     }
 
     if (msg.type === 'PLAY_TRIGGER') {
+      const previousMode = state.currentMode;
       const startAt = triggerPlay();
       console.log(`[WS] PLAY_TRIGGER 수신 - startAt=${startAt}`);
       ws.send(JSON.stringify({ type: 'ACK', received: 'PLAY_TRIGGER', startAt }));
+
+      // 패턴/텍스트 모드에서 온 트리거만 "1회 재생 후 복귀" 대상 - 이미 영상 모드였으면
+      // (previousMode==='video') 평소처럼 계속 반복 재생한다. ACK는 이미 보냈으니 이후
+      // 처리는 비동기로 흘려보낸다(영상 길이 확인이 지연돼도 업체 쪽 응답엔 영향 없음).
+      if (previousMode !== 'video') {
+        scheduleReturnFromOneShotPlay(previousMode);
+      }
     } else {
       ws.send(JSON.stringify({ type: 'ERROR', message: `알 수 없는 type입니다: ${msg.type}` }));
     }

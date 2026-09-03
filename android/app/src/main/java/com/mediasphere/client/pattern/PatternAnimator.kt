@@ -20,6 +20,13 @@ private const val TAG = "[Pattern]"
  */
 object PatternAnimator {
 
+    // 지속시간이 끝났을 때(또는 영상 모드로 전환될 때) 즉시 멈추면 너무 갑작스러워서, 이
+    // 시간만큼 서서히 어두워진 뒤에 멈춘다. MainActivity가 텍스트 스크롤→영상 전환의
+    // 페이드아웃 시간도 이 값으로 맞춰서 쓴다(PatternAnimator.FADE_OUT_MS로 참조).
+    // server.js의 같은 이름 상수(재생목록 큐 전환 대기시간 계산에 이만큼을 추가로 더함)와
+    // 반드시 같은 값을 써야 한다.
+    const val FADE_OUT_MS = 500L
+
     private var viewRef: WeakReference<View>? = null
     private var animator: ValueAnimator? = null
     private var stopTimeoutJob: Job? = null
@@ -61,10 +68,24 @@ object PatternAnimator {
             val delayMs = stopAtEpochMs - TimeSyncManager.now()
             stopTimeoutJob = scope.launch {
                 if (delayMs > 0) delay(delayMs)
-                stop()
-                Log.d(TAG, "지속시간 종료로 점멸 자동 정지")
+                fadeOutThenStop()
+                Log.d(TAG, "지속시간 종료 - ${FADE_OUT_MS}ms 페이드아웃 후 정지")
             }
         }
+    }
+
+    // 점멸을 즉시 끊지 않고 현재 alpha에서 0으로 서서히 낮춘 뒤 정지한다 - 지속시간이
+    // 자연스럽게 끝났을 때, 그리고 패턴 모드에서 영상 모드로 전환될 때(MainActivity.
+    // handleModeVideo() - 크로스페이드) 쓴다. 명시적 STOP 명령은 stop()으로 즉시 멈춘다.
+    fun fadeOutThenStop() {
+        val view = viewRef?.get() ?: return
+        animator?.cancel() // 점멸 애니메이터 정지 - 지금 alpha 값에서 이어서 페이드아웃
+
+        val fade = ValueAnimator.ofFloat(view.alpha, 0f)
+        fade.duration = FADE_OUT_MS
+        fade.addUpdateListener { anim -> view.alpha = anim.animatedValue as Float }
+        animator = fade
+        fade.start()
     }
 
     // ValueAnimator를 cancel하면 마지막으로 애니메이션되던 alpha 값이 그대로 유지된다.

@@ -391,18 +391,32 @@ class MainActivity : ComponentActivity() {
     // (PLAY 명령을 새로 받기 전까지는 자동 재생하지 않는다)
     private fun handleModeVideo() {
         pendingPatternJob?.cancel()
-        PatternAnimator.stop()
-        TextPatternAnimator.stop()
-        patternView.visibility = View.GONE
-        patternView.alpha = 0f
-        textScrollView.stop()
-        textScrollView.visibility = View.GONE
+        val previousMode = currentMode
+
+        // playerView는 항상 patternView/textScrollView 아래 깔려 있으므로(activity_main.xml
+        // 뷰 순서 참고), 여기서 바로 보이게 해도 위에 남은 패턴/텍스트가 아직 덮고 있다 -
+        // PLAY 명령이 곧이어 오면 영상은 그 타이밍 그대로 재생을 시작하고, 화면 전환만
+        // 아래 페이드아웃으로 부드럽게 겹쳐 보인다(크로스페이드). 재생이 안 뒤따라도
+        // 문제없다 - 아래처럼 처음 위치에서 정지 상태로 자연스럽게 드러날 뿐이다.
         playerView.visibility = View.VISIBLE
         player.seekTo(0)
         player.pause()
         playbackStarted = false
         pendingStartAt = null
         currentMode = Mode.VIDEO
+
+        // 패턴/텍스트 모드에서 넘어올 때만 페이드아웃한다 - 이미 영상 모드였으면 할 일 없음.
+        when (previousMode) {
+            Mode.PATTERN -> {
+                TextPatternAnimator.stop()
+                PatternAnimator.fadeOutThenStop()
+            }
+            Mode.TEXT_SCROLL -> {
+                textScrollView.stop() // 마지막 프레임을 고정시킨 뒤 그 상태로 페이드아웃
+                textScrollView.animate().alpha(0f).setDuration(PatternAnimator.FADE_OUT_MS).start()
+            }
+            Mode.VIDEO -> {}
+        }
 
         // 모드 전환은 뷰 visibility만 바꾸는 것이라 시스템 insets 콜백이 다시 불리지 않는다.
         // 그 사이 시스템 바가 떠 있었다면 영상 뷰가 그 영역까지 못 채우므로 여기서 명시적으로 재적용한다.
@@ -450,6 +464,12 @@ class MainActivity : ComponentActivity() {
         pendingStartAt = null
         currentMode = Mode.TEXT_SCROLL
         clearColorOverlay()
+        // 영상 모드로 넘어갈 때 크로스페이드로 alpha를 0까지 낮춰뒀을 수 있어서
+        // (handleModeVideo() 참고) 다시 텍스트 모드로 들어올 때 명시적으로 복원해야 한다.
+        // 진행 중이던 페이드 애니메이션이 있으면 먼저 취소해야 그게 뒤늦게 alpha를
+        // 다시 덮어써서 화면이 안 보이는 일이 없다.
+        textScrollView.animate().cancel()
+        textScrollView.alpha = 1f
         textScrollView.visibility = View.VISIBLE
 
         hideSystemBars()
