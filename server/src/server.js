@@ -394,30 +394,49 @@ function computeFileStatus(deviceId) {
   return reported.status;
 }
 
+// 폰 config를 한꺼번에 발행하면 439대가 거의 동시에 자기 영상을 /clips에서 다운로드하기
+// 시작해 폐쇄망 Wi-Fi/서버 대역폭이 몰리고, 그 중 신호가 약하거나 타이밍이 나빴던 몇 대가
+// 다운로드 타임아웃(안드로이드 DOWNLOAD_TIMEOUT_MS)으로 실패하는 문제가 실기기에서 확인됐다
+// (영상교체 배포 시 몇 대가 랜덤하게 파일 동기화에 실패, 2026-09). 발행 자체를 이 간격만큼
+// 순차적으로 늦춰서 다운로드 시작 시점을 시간축에 분산시킨다.
+const DEVICE_PUBLISH_STAGGER_MS = 150;
+
 // manifest의 폰별 config.json을 wall/device/{deviceId}에 retain 발행한다.
 // wall/state/color와 같은 패턴 - 늦게 접속/재부팅한 폰도 자동으로 최신 config를 받는다.
+// 위 이유로 발행은 폰마다 DEVICE_PUBLISH_STAGGER_MS씩 늦춰서 순차적으로 나가고, 마지막
+// 발행이 끝난 뒤 다운로드가 마무리될 여유(10초)를 두고 CHECK_UPDATE를 한 번 더 브로드캐스트
+// 한다 - 혼잡 때문에 처음에 실패했던 폰도 이때는 네트워크가 한산해져 재시도가 성공하기 쉽다.
 function publishDeviceConfigs() {
   if (!manifest) {
     console.error('[MQTT] manifest 없음 - wall/device 발행 생략');
     return 0;
   }
 
-  let count = 0;
-  for (const device of manifest.devices) {
+  const targets = manifest.devices.filter((device) => {
     const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
-    if (!fs.existsSync(configPath)) {
-      console.error(`[MQTT] config 파일 없음, 발행 생략 - deviceId=${device.deviceId}`);
-      continue;
-    }
+    const exists = fs.existsSync(configPath);
+    if (!exists) console.error(`[MQTT] config 파일 없음, 발행 생략 - deviceId=${device.deviceId}`);
+    return exists;
+  });
 
-    const payload = fs.readFileSync(configPath, 'utf-8');
-    const topic = `${MQTT_DEVICE_TOPIC_PREFIX}${device.deviceId}`;
-    mqttClient.publish(topic, payload, { retain: true, qos: 1 }, (err) => {
-      if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
-    });
-    count += 1;
-  }
-  return count;
+  targets.forEach((device, index) => {
+    setTimeout(() => {
+      const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
+      const payload = fs.readFileSync(configPath, 'utf-8');
+      const topic = `${MQTT_DEVICE_TOPIC_PREFIX}${device.deviceId}`;
+      mqttClient.publish(topic, payload, { retain: true, qos: 1 }, (err) => {
+        if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
+      });
+    }, index * DEVICE_PUBLISH_STAGGER_MS);
+  });
+
+  const lastPublishDelayMs = Math.max(0, targets.length - 1) * DEVICE_PUBLISH_STAGGER_MS;
+  setTimeout(() => {
+    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
+    console.log('[MQTT] 순차 발행 완료 - CHECK_UPDATE 재검증 브로드캐스트');
+  }, lastPublishDelayMs + 10000);
+
+  return targets.length;
 }
 
 // ── APK 버전 정보 (OTA) ──────────────────────────────
@@ -1323,9 +1342,8 @@ app.post('/api/distribute/publish', (req, res) => {
   }
 
   const published = publishDeviceConfigs();
-  publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
 
-  console.log(`[HTTP] 배포 재발행 - wall/device ${published}건 + CHECK_UPDATE 브로드캐스트`);
+  console.log(`[HTTP] 배포 재발행 - wall/device ${published}건 순차 발행 시작 (다운로드 몰림 방지)`);
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
 });
 
@@ -1488,8 +1506,7 @@ async function processVideoReplace(mode, uploadedPath) {
     loadManifest();
     if (!manifest) throw new Error('deploy.py는 끝났는데 manifest.json을 못 찾았습니다.');
     const published = publishDeviceConfigs();
-    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
-    pushVideoReplaceLog(`발행 완료 - wall/device ${published}건 + CHECK_UPDATE 브로드캐스트`);
+    pushVideoReplaceLog(`발행 시작 - wall/device ${published}건 순차 발행 중 (다운로드 몰림 방지)`);
 
     // 새 영상으로 바뀌었으니 캐시해둔 길이(있었다면)는 버린다 - 다음에 필요할 때
     // (PLAY_TRIGGER 1회 재생 등) 새 영상으로 다시 잰다.

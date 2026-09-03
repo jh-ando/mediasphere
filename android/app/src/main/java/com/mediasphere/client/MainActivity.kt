@@ -114,6 +114,14 @@ class MainActivity : ComponentActivity() {
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
 
+    // 마지막으로 "다운로드까지 성공적으로 동기화"한 config - handleDeviceConfig()의 중복
+    // 수신 판단에 이걸 쓴다. lastDeviceConfig는 성공 여부와 무관하게 메시지를 받자마자
+    // 갱신되므로, 그걸로 중복 판단을 하면 다운로드가 실패했을 때도 "이미 처리함"으로
+    // 기록돼버려서 나중에 재연결로 같은 retained 메시지를 다시 받아도 영원히 재시도를
+    // 건너뛰는 문제가 있었다(영상교체 배포 시 439대 동시 다운로드 폭주로 일부가 타임아웃
+    // 실패한 뒤 앱을 재시작하기 전엔 스스로 복구가 안 되던 원인, 2026-09).
+    private var lastSyncedConfig: MqttControlMessage.DeviceConfig? = null
+
     // 지금 ExoPlayer에 실제로 로드돼 있는 파일 - 동기화 결과가 이미 적용된 파일과 같으면
     // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
     private lateinit var currentVideoFile: File
@@ -797,21 +805,19 @@ class MainActivity : ComponentActivity() {
     // wall/device/{deviceId}(retain)로 새 config를 받았을 때 - 배정된 영상 파일을 동기화한다.
     // retain 특성상 재접속마다 같은 내용이 다시 오고, 게다가 서버가 qos:1로 발행하기 때문에
     // MQTT 스펙상("적어도 한 번" 전달) 신호가 불안정한 폰은 완전히 동일한 메시지를 짧은
-    // 간격으로 중복 수신할 수 있다(재전송 - 버그가 아니라 QoS 1의 정상 동작). syncVideoFile
-    // 안에서도 체크섬이 같으면 재다운로드는 안 하지만, 그것만으로는 매번 영상 파일 전체를
-    // 다시 해싱하는 비용은 못 피한다 - 그래서 여기서 직전과 완전히 동일한 내용이면 아예
-    // syncVideoFile 호출 자체를 건너뛴다(실기기에서 특정 폰 몇 대가 몇 초 간격으로 같은
-    // 체크섬을 계속 재발행하는 현상 확인 후 추가).
+    // 간격으로 중복 수신할 수 있다(재전송 - 버그가 아니라 QoS 1의 정상 동작). 여기서 직전에
+    // "성공적으로 동기화 완료"한 내용과 완전히 같으면 syncVideoFile 호출 자체를 건너뛴다 -
+    // 아직 동기화에 실패한 상태(lastSyncedConfig 미갱신)라면 내용이 같아도 다시 시도한다.
     private fun handleDeviceConfig(message: MqttControlMessage.DeviceConfig) {
-        val previous = lastDeviceConfig
         lastDeviceConfig = message
-        if (previous != null && previous.videoPath == message.videoPath &&
-            previous.currentVideo == message.currentVideo && previous.checksum == message.checksum
+        val synced = lastSyncedConfig
+        if (synced != null && synced.videoPath == message.videoPath &&
+            synced.currentVideo == message.currentVideo && synced.checksum == message.checksum
         ) {
-            Log.d(SYNC_TAG, "중복 config 수신(내용 동일) - 재검증 스킵")
+            Log.d(SYNC_TAG, "이미 동기화 완료된 내용과 동일 - 재검증 스킵")
             return
         }
-        syncVideoFile(message.videoPath, message.currentVideo, message.checksum)
+        syncVideoFile(message)
     }
 
     // CHECK_UPDATE - 서버가 "지금 파일 상태를 다시 확인해서 보고해줘"라고 요청할 때 수신.
@@ -822,7 +828,7 @@ class MainActivity : ComponentActivity() {
             Log.d(SYNC_TAG, "CHECK_UPDATE 수신 - 아직 배정된 config 없음, 스킵")
             return
         }
-        syncVideoFile(config.videoPath, config.currentVideo, config.checksum)
+        syncVideoFile(config)
     }
 
     // RESTART_APP - targetDeviceIds가 없으면(전체 대상) 무조건, 있으면 내 deviceId가
@@ -843,11 +849,13 @@ class MainActivity : ComponentActivity() {
     // 있어도 expectedChecksum이 주어졌는데 로컬 체크섬과 다르면(서버가 같은 파일명으로 다른
     // 영상을 재배포한 경우) 무조건 재다운로드한다 - expectedChecksum이 없으면(옛 manifest 등)
     // 예전처럼 "있으면 믿는다"로 동작한다. 결과를 wall/ready(성공) 또는 wall/error(실패)로 보고한다.
-    private fun syncVideoFile(videoPath: String, currentVideo: String, expectedChecksum: String?) {
+    private fun syncVideoFile(config: MqttControlMessage.DeviceConfig) {
+        val videoPath = config.videoPath
+        val currentVideo = config.currentVideo
         lifecycleScope.launch(Dispatchers.IO) {
             val dest = File(videoPath, "$currentVideo.mp4")
             val serverIp = readServerIp()
-            val expected = expectedChecksum?.removePrefix("sha256:")
+            val expected = config.checksum?.removePrefix("sha256:")
 
             var checksum: String? = null
             if (dest.exists()) {
@@ -876,6 +884,7 @@ class MainActivity : ComponentActivity() {
                 persistLocalConfig(videoPath, currentVideo)
                 mqttManager.publishReady("$currentVideo.mp4", "sha256:$checksum")
                 Log.d(SYNC_TAG, "동기화 완료 - $currentVideo (checksum=$checksum)")
+                lastSyncedConfig = config
                 withContext(Dispatchers.Main) { applyVideoFile(dest, forceReload = didDownload) }
             } else {
                 mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드/검증 실패")
