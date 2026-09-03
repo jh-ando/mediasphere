@@ -105,11 +105,15 @@ class MainActivity : ComponentActivity() {
 
     private var currentMode = Mode.VIDEO
 
-    // PATTERN_START의 startAt까지 대기하는 코루틴 - 새 명령이 오면 이전 대기를 취소한다
+    // PATTERN_START/SEQUENCE_START의 시작 시각까지 대기하는 코루틴 - 새 명령이 오면 이전
+    // 대기를 취소한다. 예전엔 각각 별도 변수(pendingPatternJob/pendingSequenceJob)였는데,
+    // 서로의 취소를 챙기지 않는 곳이 있어서 버그가 났다 - 순차 점멸에서 stepDelay 때문에
+    // 차례가 아직 안 온 폰의 대기 코루틴이 취소되지 않은 채 남아있다가, 다음 큐가 전체
+    // 점멸로 넘어간 뒤에야 뒤늦게 실행되면서 이미 지난 종료시각을 그대로 넘겨 그 폰만
+    // 전체 점멸 도중 즉시 꺼져버리는 문제였다. 어차피 이 두 종류의 "예약된 시작"은 동시에
+    // 둘 다 유효할 이유가 없으므로(하나가 시작하면 이전 예약은 무조건 무효), 변수를
+    // 하나로 합쳐서 이런 취소 누락 자체가 생길 수 없게 했다(2026-09).
     private var pendingPatternJob: Job? = null
-
-    // SEQUENCE_START의 내 시작 시각까지 대기하는 코루틴 - 새 명령이 오면 이전 대기를 취소한다
-    private var pendingSequenceJob: Job? = null
 
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
@@ -615,8 +619,8 @@ class MainActivity : ComponentActivity() {
         val deviceId = mqttManager.deviceId()
         val myStartAt = message.startAt + (deviceId - 1) * message.stepDelay
 
-        pendingSequenceJob?.cancel()
-        pendingSequenceJob = lifecycleScope.launch {
+        pendingPatternJob?.cancel()
+        pendingPatternJob = lifecycleScope.launch {
             val delayMs = myStartAt - TimeSyncManager.now()
             if (delayMs > 0) delay(delayMs)
 
@@ -643,7 +647,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleSequenceStop() {
-        pendingSequenceJob?.cancel()
+        pendingPatternJob?.cancel()
         PatternAnimator.stop()
         Log.d(PATTERN_TAG, "순차 점멸 정지: 마지막 색상 유지")
     }

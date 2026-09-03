@@ -533,6 +533,26 @@ function createCueRow(cue, index) {
   modeSelect.value = cue.mode;
   modeSelect.addEventListener('change', () => { playlistCues[index].mode = modeSelect.value; });
 
+  const moveUpBtn = document.createElement('button');
+  moveUpBtn.className = 'btn-small';
+  moveUpBtn.textContent = '↑';
+  moveUpBtn.title = '위로 이동';
+  moveUpBtn.disabled = index === 0;
+  moveUpBtn.addEventListener('click', () => {
+    [playlistCues[index - 1], playlistCues[index]] = [playlistCues[index], playlistCues[index - 1]];
+    renderPlaylistCues();
+  });
+
+  const moveDownBtn = document.createElement('button');
+  moveDownBtn.className = 'btn-small';
+  moveDownBtn.textContent = '↓';
+  moveDownBtn.title = '아래로 이동';
+  moveDownBtn.disabled = index === playlistCues.length - 1;
+  moveDownBtn.addEventListener('click', () => {
+    [playlistCues[index], playlistCues[index + 1]] = [playlistCues[index + 1], playlistCues[index]];
+    renderPlaylistCues();
+  });
+
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'btn-small btn-danger';
   deleteBtn.textContent = '삭제';
@@ -544,7 +564,10 @@ function createCueRow(cue, index) {
   const label = document.createElement('span');
   label.textContent = `#${index + 1}`;
 
-  row.append(label, colorInput, intervalInput, durationInput, stepDelayInput, modeSelect, deleteBtn);
+  row.append(
+    label, colorInput, intervalInput, durationInput, stepDelayInput, modeSelect,
+    moveUpBtn, moveDownBtn, deleteBtn,
+  );
   return row;
 }
 
@@ -565,11 +588,16 @@ function renderPlaylistCues() {
   updatePlaylistEditability();
 }
 
-// 재생 중엔 모든 편집 요소(입력/추가/삭제/저장)를 막는다 - 서버도 같은 규칙을
+// 재생 중엔 모든 편집 요소(입력/추가/삭제/저장/이동)를 막는다 - 서버도 같은 규칙을
 // /api/pattern/playlist(저장)에서 강제하지만, 여기서도 막아야 헷갈리지 않는다.
+// 재생 중이 아닐 땐 일부러 강제로 활성화하지 않는다 - ↑/↓ 이동 버튼은 맨 위/아래 큐에서
+// createCueRow()가 이미 disabled를 걸어두는데, 여기서 무조건 false로 덮어쓰면 그 경계
+// 처리가 매번 renderPlaylistCues() 직후 풀려버린다.
 function updatePlaylistEditability() {
   const disabled = playlistPlaying;
-  playlistCuesEl.querySelectorAll('input, select, button').forEach((el) => { el.disabled = disabled; });
+  if (disabled) {
+    playlistCuesEl.querySelectorAll('input, select, button').forEach((el) => { el.disabled = true; });
+  }
   btnPlaylistAddCue.disabled = disabled;
   btnPlaylistSave.disabled = disabled;
   btnPlaylistPlay.disabled = disabled || playlistCues.length === 0;
