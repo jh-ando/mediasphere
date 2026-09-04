@@ -73,6 +73,11 @@ private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 
 private const val SERVER_PORT = 3000
 private const val DOWNLOAD_TIMEOUT_MS = 15000
 private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
+// 영상교체 배포 시 439대가 몰려 순간적으로 타임아웃 나는 폰이 몇 대 있었는데, 재시도가
+// 없어 한 번 실패하면 그걸로 끝이라 계속 못 받는 문제가 있었다 - OTA(UpdateManager의
+// downloadWithRetry)와 동일한 지수 백오프 재시도를 추가한다(실기기에서 검증된 값, 2026-09).
+private const val MAX_DOWNLOAD_RETRIES = 4
+private const val DOWNLOAD_BASE_BACKOFF_MS = 2000L
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
@@ -908,7 +913,7 @@ class MainActivity : ComponentActivity() {
                     Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
                     null
                 } else {
-                    downloadAndVerify(serverIp, currentVideo, dest).also { didDownload = it != null }
+                    downloadWithRetry(serverIp, currentVideo, dest).also { didDownload = it != null }
                 }
             }
 
@@ -961,9 +966,24 @@ class MainActivity : ComponentActivity() {
         Log.d(SYNC_TAG, "재생 파일 교체 완료 - ${dest.path}")
     }
 
+    // 실패(네트워크 오류/타임아웃) 시 지수 백오프로 재시도한다 - OTA의 downloadWithRetry와 동일한 방식.
+    private suspend fun downloadWithRetry(serverIp: String, currentVideo: String, dest: File): String? {
+        repeat(MAX_DOWNLOAD_RETRIES) { attempt ->
+            val checksum = downloadOnce(serverIp, currentVideo, dest)
+            if (checksum != null) return checksum
+
+            if (attempt < MAX_DOWNLOAD_RETRIES - 1) {
+                val backoffMs = DOWNLOAD_BASE_BACKOFF_MS * (1L shl attempt)
+                Log.d(SYNC_TAG, "다운로드 재시도 대기 - ${backoffMs}ms ($currentVideo, 시도 ${attempt + 1}/$MAX_DOWNLOAD_RETRIES)")
+                delay(backoffMs)
+            }
+        }
+        return null
+    }
+
     // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤
     // 완료되면 최종 경로로 옮겨서, 다운로드 도중 실패해도 손상된 파일이 dest에 남지 않게 한다.
-    private fun downloadAndVerify(serverIp: String, currentVideo: String, dest: File): String? {
+    private fun downloadOnce(serverIp: String, currentVideo: String, dest: File): String? {
         val tmpFile = File(dest.parentFile, "${dest.name}.download")
         var connection: HttpURLConnection? = null
         return try {

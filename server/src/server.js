@@ -398,8 +398,11 @@ function computeFileStatus(deviceId) {
 // 시작해 폐쇄망 Wi-Fi/서버 대역폭이 몰리고, 그 중 신호가 약하거나 타이밍이 나빴던 몇 대가
 // 다운로드 타임아웃(안드로이드 DOWNLOAD_TIMEOUT_MS)으로 실패하는 문제가 실기기에서 확인됐다
 // (영상교체 배포 시 몇 대가 랜덤하게 파일 동기화에 실패, 2026-09). 발행 자체를 이 간격만큼
-// 순차적으로 늦춰서 다운로드 시작 시점을 시간축에 분산시킨다.
-const DEVICE_PUBLISH_STAGGER_MS = 150;
+// 순차적으로 늦춰서 다운로드 시작 시점을 시간축에 분산시킨다. 150ms로도 대부분 해결됐지만
+// 여전히 2대 정도 남아있어서, 실기기에서 문제없이 검증된 OTA 롤링 배포 간격(stepDelayMs=500,
+// /api/app-deploy)과 같은 값으로 올렸다 - 안드로이드 쪽에도 이번에 재시도(지수 백오프)를
+// 추가해서, 이 간격을 늘려도 못 잡는 극소수 실패는 그쪽에서 복구한다.
+const DEVICE_PUBLISH_STAGGER_MS = 500;
 
 // manifest의 폰별 config.json을 wall/device/{deviceId}에 retain 발행한다.
 // wall/state/color와 같은 패턴 - 늦게 접속/재부팅한 폰도 자동으로 최신 config를 받는다.
