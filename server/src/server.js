@@ -47,6 +47,9 @@ const DEFAULT_TEXT_PATTERN_LEAD_TIME_MS = 1000;
 const MODE_MQTT_TYPES = { video: 'MODE_VIDEO', pattern: 'MODE_PATTERN', text: 'MODE_TEXT' };
 const DEFAULT_TEXT_LEAD_TIME_MS = 3000; // 439대가 명령을 다 받을 시간 여유 - OTA와 비슷한 이유로 컬러보다 넉넉히
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
+// "fixed" = color 그대로, "random" = 폰마다 무작위 색(채도 조절 가능),
+// "randomGray" = 폰마다 무작위 흑백(명도만 무작위, 채도 0 고정) - 폰 쪽 resolveBlinkColor()와 대응.
+const PATTERN_COLOR_MODES = ['fixed', 'random', 'randomGray'];
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
 const DEFAULT_OTA_LEAD_TIME_MS = 3000; // 다운로드+설치 파이프라인 전체를 트리거하므로 컬러 전환보다 여유를 더 둠
@@ -102,10 +105,12 @@ const state = {
     interval: 500,
     duration: 3000,
     stepDelay: 200,
-    // "fixed"면 color를 그대로 쓰고, "random"이면 색을 무시하고 각 폰이 자기 화면에서
-    // 직접 무작위 색을 뽑는다(서버는 439대가 실제로 뽑은 색을 모른다) - 파라미터만
-    // 방송하고 폰이 로컬에서 처리하는 기존 원칙과 동일한 설계.
+    // "fixed"면 color를 그대로 쓰고, "random"/"randomGray"면 색을 무시하고 각 폰이 자기
+    // 화면에서 직접 무작위 색을 뽑는다(서버는 439대가 실제로 뽑은 색을 모른다) - 파라미터만
+    // 방송하고 폰이 로컬에서 처리하는 기존 원칙과 동일한 설계. randomGray는 채도 0 고정
+    // (흑백만), colorSaturation은 random(컬러)에서만 쓰이는 채도(%) - 낮을수록 파스텔톤.
     colorMode: 'fixed',
+    colorSaturation: 100,
   },
   // 패턴 재생목록 - 큐(cue) 배열을 순서대로 재생한다. 각 큐: { color, interval, duration,
   // stepDelay, mode: "all"|"sequence" }. duration=0(무한 반복)은 재생목록에서 못 쓴다 -
@@ -777,17 +782,24 @@ app.post('/api/idle', (req, res) => {
 
 // 패턴 설정 저장 (발행하지 않음 - PATTERN_START 시점에 이 값을 사용한다)
 app.post('/api/pattern/config', (req, res) => {
-  const { color, interval, duration, stepDelay, colorMode } = req.body;
+  const { color, interval, duration, stepDelay, colorMode, colorSaturation } = req.body;
   if (color !== undefined) state.patternConfig.color = color;
   if (interval !== undefined) state.patternConfig.interval = interval;
   if (duration !== undefined) state.patternConfig.duration = duration;
   if (stepDelay !== undefined) state.patternConfig.stepDelay = stepDelay;
   if (colorMode !== undefined) {
-    if (colorMode !== 'fixed' && colorMode !== 'random') {
-      res.status(400).json({ success: false, error: 'colorMode는 "fixed" 또는 "random"이어야 합니다.' });
+    if (!PATTERN_COLOR_MODES.includes(colorMode)) {
+      res.status(400).json({ success: false, error: `colorMode는 ${PATTERN_COLOR_MODES.map((m) => `"${m}"`).join('/')} 중 하나여야 합니다.` });
       return;
     }
     state.patternConfig.colorMode = colorMode;
+  }
+  if (colorSaturation !== undefined) {
+    if (!Number.isFinite(colorSaturation) || colorSaturation < 0 || colorSaturation > 100) {
+      res.status(400).json({ success: false, error: 'colorSaturation은 0~100 사이 숫자여야 합니다.' });
+      return;
+    }
+    state.patternConfig.colorSaturation = colorSaturation;
   }
   savePatternConfig();
 
@@ -805,6 +817,7 @@ app.post('/api/pattern/start', (req, res) => {
       duration: state.patternConfig.duration,
       startAt: Date.now() + 500,
       colorMode: state.patternConfig.colorMode,
+      colorSaturation: state.patternConfig.colorSaturation,
     },
     { retain: false },
   );
@@ -872,6 +885,7 @@ function runCue(index) {
         startAt: Date.now() + leadMs,
         totalDevices,
         colorMode: cue.colorMode || 'fixed',
+        colorSaturation: cue.colorSaturation ?? 100,
       },
       { retain: false },
     );
@@ -885,6 +899,7 @@ function runCue(index) {
         duration: cue.duration,
         startAt: Date.now() + leadMs,
         colorMode: cue.colorMode || 'fixed',
+        colorSaturation: cue.colorSaturation ?? 100,
       },
       { retain: false },
     );
@@ -951,9 +966,15 @@ app.post('/api/pattern/playlist', (req, res) => {
       res.status(400).json({ ok: false, error: `${i + 1}번째 큐: mode는 "all" 또는 "sequence"여야 합니다.` });
       return;
     }
-    // colorMode는 이전에 저장된 재생목록엔 없을 수 있어(하위호환) 생략 가능 - 생략 시 fixed로 취급.
-    if (cue.colorMode !== undefined && cue.colorMode !== 'fixed' && cue.colorMode !== 'random') {
-      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: colorMode는 "fixed" 또는 "random"이어야 합니다.` });
+    // colorMode/colorSaturation은 이전에 저장된 재생목록엔 없을 수 있어(하위호환) 생략
+    // 가능 - 생략 시 각각 fixed/100으로 취급.
+    if (cue.colorMode !== undefined && !PATTERN_COLOR_MODES.includes(cue.colorMode)) {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: colorMode는 ${PATTERN_COLOR_MODES.map((m) => `"${m}"`).join('/')} 중 하나여야 합니다.` });
+      return;
+    }
+    if (cue.colorSaturation !== undefined
+      && (!Number.isFinite(cue.colorSaturation) || cue.colorSaturation < 0 || cue.colorSaturation > 100)) {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: colorSaturation은 0~100 사이 숫자여야 합니다.` });
       return;
     }
   }
@@ -1207,6 +1228,7 @@ app.post('/api/sequence/start', (req, res) => {
       startAt: Date.now() + 500,
       totalDevices,
       colorMode: state.patternConfig.colorMode,
+      colorSaturation: state.patternConfig.colorSaturation,
     },
     { retain: false },
   );

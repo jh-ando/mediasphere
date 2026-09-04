@@ -1,5 +1,7 @@
 package com.mediasphere.client.pattern
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.util.Log
 import android.view.View
@@ -45,7 +47,13 @@ object PatternAnimator {
     // 받는 이유 - 순차 점멸처럼 폰마다 시작 시각이 다른 경우, "내가 시작한 뒤로 얼마나"가
     // 아니라 "다 같이 언제 끝나는지"를 기준으로 삼아야 먼저 시작한 폰이 큐가 끝나기도 전에
     // 먼저 꺼지는 문제가 없다(순차 점멸 지속시간 의미 수정, 2026-09).
-    fun startBlink(color: Int, interval: Long, stopAtEpochMs: Long?) {
+    //
+    // colorProvider는 색을 값 하나가 아니라 "뽑는 방법"으로 받는다 - 고정 색상 모드는 매번
+    // 같은 값을 반환하는 람다를 넘기면 되고, 랜덤 모드는 호출할 때마다 새 값을 뽑는 람다를
+    // 넘기면 된다. 알파가 완전히 꺼진(0) 시점마다 다시 호출해서 배경색을 갈아끼운다 - 켜진
+    // 상태에서 바꾸면 화면이 켜져 있는 도중 색이 툭 튀어 보이므로, 안 보일 때만 바꾼다
+    // (패턴 모드 랜덤 컬러가 깜빡일 때마다 새로 뽑히게 하는 기능, 2026-09).
+    fun startBlink(colorProvider: () -> Int, interval: Long, stopAtEpochMs: Long?) {
         stop()
 
         val view = viewRef?.get()
@@ -54,7 +62,7 @@ object PatternAnimator {
             return
         }
 
-        view.setBackgroundColor(color)
+        view.setBackgroundColor(colorProvider())
 
         val valueAnimator = ValueAnimator.ofFloat(0f, 1f)
         valueAnimator.duration = interval / 2
@@ -63,10 +71,15 @@ object PatternAnimator {
         valueAnimator.addUpdateListener { anim ->
             view.alpha = anim.animatedValue as Float
         }
+        valueAnimator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationRepeat(animation: Animator) {
+                if (view.alpha == 0f) view.setBackgroundColor(colorProvider())
+            }
+        })
         animator = valueAnimator
         valueAnimator.start()
 
-        Log.d(TAG, "점멸 시작 - color=#${Integer.toHexString(color)}, interval=${interval}ms, stopAt=$stopAtEpochMs")
+        Log.d(TAG, "점멸 시작 - interval=${interval}ms, stopAt=$stopAtEpochMs")
 
         if (stopAtEpochMs != null) {
             val delayMs = stopAtEpochMs - TimeSyncManager.now()
@@ -78,9 +91,9 @@ object PatternAnimator {
         }
     }
 
-    // 점멸을 즉시 끊지 않고 현재 alpha에서 0으로 서서히 낮춘 뒤 정지한다 - 지속시간이
-    // 자연스럽게 끝났을 때, 그리고 패턴 모드에서 영상 모드로 전환될 때(MainActivity.
-    // handleModeVideo() - 크로스페이드) 쓴다. 명시적 STOP 명령은 stop()으로 즉시 멈춘다.
+    // 점멸을 즉시 끊지 않고 현재 alpha에서 0으로 서서히 낮춘 뒤 정지한다 - 재생목록 큐의
+    // 지속시간이 자연스럽게 끝나 다음 큐로 넘어갈 때 쓴다(패턴/텍스트→영상 전환은 하드컷으로
+    // 바뀌어서 이제 안 씀, 2026-09). 명시적 STOP 명령은 stop()으로 즉시 멈춘다.
     fun fadeOutThenStop() {
         val view = viewRef?.get() ?: return
         animator?.cancel() // 점멸 애니메이터 정지 - 지금 alpha 값에서 이어서 페이드아웃

@@ -22,7 +22,8 @@ const btnIdle = document.getElementById('btn-idle');
 const videoControlsEl = document.getElementById('video-controls');
 const patternControlsEl = document.getElementById('pattern-controls');
 const patternColorEl = document.getElementById('pattern-color');
-const patternColorRandomEl = document.getElementById('pattern-color-random');
+const patternColorModeEl = document.getElementById('pattern-color-mode');
+const patternColorSaturationEl = document.getElementById('pattern-color-saturation');
 const patternIntervalEl = document.getElementById('pattern-interval');
 const patternDurationEl = document.getElementById('pattern-duration');
 const patternStepDelayEl = document.getElementById('pattern-step-delay');
@@ -204,8 +205,9 @@ function applyStatusUpdate(data) {
     patternIntervalEl.value = data.patternConfig.interval;
     patternDurationEl.value = data.patternConfig.duration;
     patternStepDelayEl.value = data.patternConfig.stepDelay;
-    patternColorRandomEl.checked = data.patternConfig.colorMode === 'random';
-    patternColorEl.disabled = patternColorRandomEl.checked;
+    patternColorModeEl.value = data.patternConfig.colorMode || 'fixed';
+    patternColorSaturationEl.value = data.patternConfig.colorSaturation ?? 100;
+    applyPatternColorModeUi(patternColorModeEl.value);
   }
 
   if (data.textScrollConfig && !editingTextConfig) {
@@ -251,8 +253,16 @@ function sendPatternConfig() {
     interval: Number(patternIntervalEl.value),
     duration: Number(patternDurationEl.value),
     stepDelay: Number(patternStepDelayEl.value),
-    colorMode: patternColorRandomEl.checked ? 'random' : 'fixed',
+    colorMode: patternColorModeEl.value,
+    colorSaturation: Number(patternColorSaturationEl.value),
   }).catch((err) => console.error('[HTTP] 패턴 설정 저장 실패', err));
+}
+
+// 색상 모드에 따라 색상 피커/채도 입력을 켜고 끈다 - "고정"이 아니면 색상 피커는 무의미하고,
+// "랜덤(컬러)"가 아니면 채도도 무의미하다(랜덤(흑백)은 채도가 항상 0으로 고정된 개념).
+function applyPatternColorModeUi(mode) {
+  patternColorEl.disabled = mode !== 'fixed';
+  patternColorSaturationEl.disabled = mode !== 'random';
 }
 
 function sendTextConfig() {
@@ -327,7 +337,10 @@ btnIdle.addEventListener('click', () => {
   fetch('/api/idle', { method: 'POST' }).catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
 });
 
-[patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl].forEach((el) => {
+[
+  patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl,
+  patternColorModeEl, patternColorSaturationEl,
+].forEach((el) => {
   el.addEventListener('focus', () => {
     editingPatternConfig = true;
   });
@@ -337,9 +350,8 @@ btnIdle.addEventListener('click', () => {
   el.addEventListener('change', sendPatternConfig);
 });
 
-patternColorRandomEl.addEventListener('change', () => {
-  patternColorEl.disabled = patternColorRandomEl.checked;
-  sendPatternConfig();
+patternColorModeEl.addEventListener('change', () => {
+  applyPatternColorModeUi(patternColorModeEl.value);
 });
 
 [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
@@ -520,16 +532,31 @@ function createCueRow(cue, index) {
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = cue.color;
-  colorInput.disabled = cue.colorMode === 'random';
+  colorInput.disabled = cue.colorMode !== undefined && cue.colorMode !== 'fixed';
   colorInput.addEventListener('input', () => { playlistCues[index].color = colorInput.value; });
 
-  const colorRandomInput = document.createElement('input');
-  colorRandomInput.type = 'checkbox';
-  colorRandomInput.title = '켜면 색상을 무시하고 폰마다 각자 무작위 색을 표시합니다';
-  colorRandomInput.checked = cue.colorMode === 'random';
-  colorRandomInput.addEventListener('change', () => {
-    playlistCues[index].colorMode = colorRandomInput.checked ? 'random' : 'fixed';
-    colorInput.disabled = colorRandomInput.checked;
+  const colorModeSelect = document.createElement('select');
+  colorModeSelect.innerHTML =
+    '<option value="fixed">고정</option>'
+    + '<option value="random">랜덤(컬러)</option>'
+    + '<option value="randomGray">랜덤(흑백)</option>';
+  colorModeSelect.value = cue.colorMode || 'fixed';
+  colorModeSelect.addEventListener('change', () => {
+    playlistCues[index].colorMode = colorModeSelect.value;
+    colorInput.disabled = colorModeSelect.value !== 'fixed';
+    saturationInput.disabled = colorModeSelect.value !== 'random';
+  });
+
+  const saturationInput = document.createElement('input');
+  saturationInput.type = 'number';
+  saturationInput.min = '0';
+  saturationInput.max = '100';
+  saturationInput.step = '5';
+  saturationInput.title = '채도(%) - 랜덤(컬러)일 때만 적용';
+  saturationInput.value = cue.colorSaturation ?? 100;
+  saturationInput.disabled = colorModeSelect.value !== 'random';
+  saturationInput.addEventListener('change', () => {
+    playlistCues[index].colorSaturation = Number(saturationInput.value);
   });
 
   const intervalInput = document.createElement('input');
@@ -593,7 +620,7 @@ function createCueRow(cue, index) {
   label.textContent = `#${index + 1}`;
 
   row.append(
-    label, colorInput, colorRandomInput, intervalInput, durationInput, stepDelayInput, modeSelect,
+    label, colorInput, colorModeSelect, saturationInput, intervalInput, durationInput, stepDelayInput, modeSelect,
     moveUpBtn, moveDownBtn, deleteBtn,
   );
   return row;
@@ -648,7 +675,10 @@ function applyPlaylistProgress(data) {
 }
 
 btnPlaylistAddCue.addEventListener('click', () => {
-  playlistCues.push({ color: '#ffffff', colorMode: 'fixed', interval: 500, duration: 3000, stepDelay: 200, mode: 'all' });
+  playlistCues.push({
+    color: '#ffffff', colorMode: 'fixed', colorSaturation: 100,
+    interval: 500, duration: 3000, stepDelay: 200, mode: 'all',
+  });
   renderPlaylistCues();
 });
 

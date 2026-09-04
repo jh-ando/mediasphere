@@ -406,11 +406,6 @@ body {
   height: 24px;
 }
 
-.playlist-cue-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-}
-
 .playlist-cue-row select {
   width: 90px;
 }
@@ -442,11 +437,6 @@ body {
   width: 32px;
 }
 
-.playlist-col-checkbox {
-  width: 30px;
-  text-align: center;
-  white-space: nowrap;
-}
 
 .playlist-col-num {
   width: 70px;

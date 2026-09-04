@@ -68,6 +68,7 @@ private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
 private const val DEFAULT_TEXT_PATTERN_FADE_MS = 400L // 서버가 fadeInMs/fadeOutMs를 안 보낸 경우 fallback
 private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
 private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 횟수"라 9를 주면 총 10회 재생된다
+private const val RANDOM_GRAY_MIN_VALUE = 0.3f // 패턴 랜덤(흑백) 최소 명도 - 이보다 어두우면 거의 안 보임
 private const val SERVER_PORT = 3000
 private const val DOWNLOAD_TIMEOUT_MS = 15000
 private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
@@ -607,29 +608,47 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
 
-            val color = resolveBlinkColor(message.colorMode, message.color) ?: return@launch
+            val initialColor = resolveBlinkColor(message.colorMode, message.color, message.colorSaturation)
+                ?: return@launch
             TextPatternAnimator.stop()
             // duration=0(무한)이 아니면 "시작 시각 + 지속시간"을 절대 종료 시각으로 넘긴다 -
             // 전체 점멸은 모든 폰이 동시에 시작하므로 상대/절대가 같은 값이라 동작은 그대로다
             // (SequenceStart 쪽과 계산 방식을 통일하기 위한 변경, 2026-09).
             val stopAt = if (message.duration > 0) message.startAt + message.duration else null
-            PatternAnimator.startBlink(color, message.interval, stopAt)
+            PatternAnimator.startBlink(
+                { resolveBlinkColor(message.colorMode, message.color, message.colorSaturation) ?: initialColor },
+                message.interval,
+                stopAt,
+            )
         }
     }
 
-    // colorMode="random"이면 message.color를 무시하고 이 폰이 직접 무작위 색을 하나 뽑는다 -
-    // 439대가 각자 독립적으로 뽑으므로 서버는 실제 색 조합을 모른다(파라미터만 방송하고
-    // 폰이 로컬에서 처리하는 기존 원칙과 동일, 2026-09). 색상(Hue)만 0~360도 무작위로 돌리고
-    // 채도/명도는 최대로 고정해 탁한 색 없이 선명한 색만 나오게 한다.
-    private fun resolveBlinkColor(colorMode: String, colorHex: String): Int? {
-        if (colorMode == "random") {
-            return Color.HSVToColor(floatArrayOf(Random.nextFloat() * 360f, 1f, 1f))
-        }
-        return try {
-            Color.parseColor(colorHex)
-        } catch (e: IllegalArgumentException) {
-            Log.e(PATTERN_TAG, "색상 파싱 실패 - $colorHex", e)
-            null
+    // colorMode="random"/"randomGray"면 message.color를 무시하고 이 폰이 직접 무작위 색을
+    // 하나 뽑는다 - 439대가 각자 독립적으로 뽑으므로 서버는 실제 색 조합을 모른다(파라미터만
+    // 방송하고 폰이 로컬에서 처리하는 기존 원칙과 동일, 2026-09).
+    // - "random": 색상(Hue)만 0~360도 무작위, 채도는 colorSaturation(0~100%)로 조절 가능
+    //   (낮을수록 파스텔톤), 명도는 최대 고정.
+    // - "randomGray": 채도 0 고정(무채색), 명도만 무작위 - 너무 어두우면 안 보이므로
+    //   RANDOM_GRAY_MIN_VALUE 이상에서만 뽑는다.
+    // 매 호출마다 새로 뽑으므로, 큐 시작 시 한 번뿐 아니라 PatternAnimator가 깜빡일 때마다
+    // 다시 불러도 그대로 재사용할 수 있다(패턴 랜덤 컬러가 깜빡일 때마다 바뀌게 하는 기능,
+    // 2026-09) - "fixed"는 매번 같은 입력을 그대로 다시 파싱할 뿐이라 재호출해도 안전하다.
+    private fun resolveBlinkColor(colorMode: String, colorHex: String, saturationPct: Double): Int? {
+        return when (colorMode) {
+            "random" -> {
+                val saturation = (saturationPct / 100.0).toFloat().coerceIn(0f, 1f)
+                Color.HSVToColor(floatArrayOf(Random.nextFloat() * 360f, saturation, 1f))
+            }
+            "randomGray" -> {
+                val value = RANDOM_GRAY_MIN_VALUE + Random.nextFloat() * (1f - RANDOM_GRAY_MIN_VALUE)
+                Color.HSVToColor(floatArrayOf(0f, 0f, value))
+            }
+            else -> try {
+                Color.parseColor(colorHex)
+            } catch (e: IllegalArgumentException) {
+                Log.e(PATTERN_TAG, "색상 파싱 실패 - $colorHex", e)
+                null
+            }
         }
     }
 
@@ -661,14 +680,19 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
 
-            val color = resolveBlinkColor(message.colorMode, message.color) ?: return@launch
+            val initialColor = resolveBlinkColor(message.colorMode, message.color, message.colorSaturation)
+                ?: return@launch
             TextPatternAnimator.stop()
             // duration=0(무한)이 아니면 "그룹 시작 시각(message.startAt) + 큐 전체 지속시간"을
             // 절대 종료 시각으로 넘긴다 - 내가 시작한 뒤로부터가 아니라 전 폰이 공유하는 절대
             // 시각 기준이라, 일찍 시작한 폰이 큐가 끝나기도 전에 먼저 꺼지지 않는다
             // (순차 점멸 지속시간 의미 수정, 2026-09).
             val stopAt = if (message.duration > 0) message.startAt + message.duration else null
-            PatternAnimator.startBlink(color, message.interval, stopAt)
+            PatternAnimator.startBlink(
+                { resolveBlinkColor(message.colorMode, message.color, message.colorSaturation) ?: initialColor },
+                message.interval,
+                stopAt,
+            )
             Log.d(PATTERN_TAG, "순차 점멸 시작 - deviceId=$deviceId, myStartAt=$myStartAt, stopAt=$stopAt")
         }
     }

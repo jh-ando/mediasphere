@@ -45,9 +45,17 @@
         색상
         <input type="color" id="pattern-color" value="#ffffff" />
       </label>
-      <label class="pattern-field pattern-field-checkbox" title="켜면 색상 선택을 무시하고 폰마다 각자 무작위 색을 표시합니다">
-        색상 랜덤
-        <input type="checkbox" id="pattern-color-random" />
+      <label class="pattern-field">
+        색상 모드
+        <select id="pattern-color-mode">
+          <option value="fixed">고정</option>
+          <option value="random">랜덤(컬러)</option>
+          <option value="randomGray">랜덤(흑백)</option>
+        </select>
+      </label>
+      <label class="pattern-field" title="랜덤(컬러)일 때만 적용 - 낮을수록 파스텔톤에 가까워집니다">
+        채도(%)
+        <input type="number" id="pattern-color-saturation" min="0" max="100" step="5" value="100" />
       </label>
       <label class="pattern-field">
         주기(ms)
@@ -71,7 +79,8 @@
         <div class="playlist-cue-header">
           <span class="playlist-col-index">#</span>
           <span class="playlist-col-color">색상</span>
-          <span class="playlist-col-checkbox" title="켜면 색상을 무시하고 폰마다 각자 무작위 색을 표시합니다">랜덤</span>
+          <span class="playlist-col-mode">색상모드</span>
+          <span class="playlist-col-num" title="랜덤(컬러)일 때만 적용">채도(%)</span>
           <span class="playlist-col-num">주기(ms)</span>
           <span class="playlist-col-num" title="순차 점멸은 폰 한 대가 아니라 이 큐 전체가 지속되는 총 시간입니다">지속시간(ms)</span>
           <span class="playlist-col-num" title="폰 간 딜레이(ms) - 순차 점멸 전용">딜레이(ms)</span>
@@ -169,8 +178,8 @@
   <section class="admin-section video-replace">
     <h2>영상 교체</h2>
     <div class="video-replace-mode">
-      <label><input type="radio" name="vr-mode" value="equirect" checked /> 등장방형 영상으로 교체 (4096x2048 기준)</label>
-      <label><input type="radio" name="vr-mode" value="frontback" /> 일반(1:1) 영상 - 전/후면 교체 (2160x2160 기준)</label>
+      <label><input type="radio" name="vr-mode" value="frontback" checked /> 일반(1:1) 영상 - 전/후면 교체 (2160x2160 기준)</label>
+      <label><input type="radio" name="vr-mode" value="equirect" /> 등장방형 영상으로 교체 (4096x2048 기준)</label>
     </div>
 
     <div class="video-replace-row">

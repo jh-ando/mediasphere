@@ -76,6 +76,7 @@ sealed class MqttControlMessage {
         val duration: Long,
         val startAt: Long,
         val colorMode: String,
+        val colorSaturation: Double,
     ) : MqttControlMessage()
     object PatternStop : MqttControlMessage()
 
@@ -88,6 +89,7 @@ sealed class MqttControlMessage {
         val startAt: Long,
         val totalDevices: Int,
         val colorMode: String,
+        val colorSaturation: Double,
     ) : MqttControlMessage()
     object SequenceStop : MqttControlMessage()
 
@@ -398,6 +400,7 @@ class MqttManager(
                     duration = json.getLong("duration"),
                     startAt = json.getLong("startAt"),
                     colorMode = json.optString("colorMode", "fixed"),
+                    colorSaturation = json.optDouble("colorSaturation", 100.0),
                 )
                 "PATTERN_STOP" -> MqttControlMessage.PatternStop
                 "SEQUENCE_START" -> MqttControlMessage.SequenceStart(
@@ -408,6 +411,7 @@ class MqttManager(
                     startAt = json.getLong("startAt"),
                     totalDevices = json.getInt("totalDevices"),
                     colorMode = json.optString("colorMode", "fixed"),
+                    colorSaturation = json.optDouble("colorSaturation", 100.0),
                 )
                 "SEQUENCE_STOP" -> MqttControlMessage.SequenceStop
                 "SHOW_ID" -> MqttControlMessage.ShowId(
