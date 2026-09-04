@@ -55,10 +55,6 @@ private const val SYNC_TAG = "[FileSync]"
 // config.json 읽기 실패 등으로 videoPath/currentVideo를 못 구했을 때만 쓰는 최후 fallback
 private const val DEFAULT_VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
 private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 대기 시간 - 초기 drift가 크게 나는 것을 방지
-// 패턴/텍스트 -> 영상 전환 페이드아웃이 애니메이터 문제 등 어떤 이유로든 제대로 안 끝나면
-// 이전 모드 화면이 영상 위에 계속 남아있는 문제가 있었다 - FADE_OUT_MS가 지나고도 이만큼
-// 더 지나면 애니메이션 상태와 무관하게 무조건 alpha를 0으로 확정 짓는 안전장치를 둔다.
-private const val FADE_SAFETY_BUFFER_MS = 300L
 // TimeSyncManager 재동기화 주기. 영상 모드는 DriftCorrector가 초당 30회 오는 UDP
 // 타임코드로 계속 보정하지만, 텍스트/패턴 모드는 UDP 타임코드를 안 받아서 이 재동기화가
 // 유일한 기준이다 - 주기가 길수록 그 사이 폰 시계 편차가 그대로 누적된다(1분일 때 특정
@@ -425,11 +421,23 @@ class MainActivity : ComponentActivity() {
 
         pendingPatternJob?.cancel()
 
-        // playerView는 항상 patternView/textScrollView 아래 깔려 있으므로(activity_main.xml
-        // 뷰 순서 참고), 여기서 바로 보이게 해도 위에 남은 패턴/텍스트가 아직 덮고 있다 -
-        // PLAY 명령이 곧이어 오면 영상은 그 타이밍 그대로 재생을 시작하고, 화면 전환만
-        // 아래 페이드아웃으로 부드럽게 겹쳐 보인다(크로스페이드). 재생이 안 뒤따라도
-        // 문제없다 - 아래처럼 처음 위치에서 정지 상태로 자연스럽게 드러날 뿐이다.
+        // 패턴/텍스트 모드에서 넘어올 때 위에 덮여있던 뷰를 즉시 치운다(하드컷). 예전엔 여기서
+        // 페이드아웃 크로스페이드를 했었는데, 실기기에서 애니메이션이 중간에 실패하거나 정지화면
+        // (0번 프레임)이 잠깐 노출되는 문제가 반복돼서 - 애니메이션 자체를 없애 그 문제군을
+        // 통째로 제거했다(2026-09). 즉시 끊기는 느낌은 있지만 항상 동일하게 동작한다.
+        when (previousMode) {
+            Mode.PATTERN -> {
+                TextPatternAnimator.stop()
+                PatternAnimator.stop()
+                patternView.visibility = View.GONE
+            }
+            Mode.TEXT_SCROLL -> {
+                textScrollView.stop()
+                textScrollView.visibility = View.GONE
+            }
+            Mode.VIDEO -> {}
+        }
+
         playerView.visibility = View.VISIBLE
         player.seekTo(0)
         player.pause()
@@ -437,37 +445,11 @@ class MainActivity : ComponentActivity() {
         pendingStartAt = null
         currentMode = Mode.VIDEO
 
-        // 패턴/텍스트 모드에서 넘어올 때 페이드아웃한다(위에서 이미 VIDEO -> VIDEO 중복은 걸러짐).
-        when (previousMode) {
-            Mode.PATTERN -> {
-                TextPatternAnimator.stop()
-                PatternAnimator.fadeOutThenStop()
-                scheduleFadeOutSafetyNet(patternView)
-            }
-            Mode.TEXT_SCROLL -> {
-                textScrollView.stop() // 마지막 프레임을 고정시킨 뒤 그 상태로 페이드아웃
-                textScrollView.animate().alpha(0f).setDuration(PatternAnimator.FADE_OUT_MS).start()
-                scheduleFadeOutSafetyNet(textScrollView)
-            }
-            Mode.VIDEO -> {}
-        }
-
         // 모드 전환은 뷰 visibility만 바꾸는 것이라 시스템 insets 콜백이 다시 불리지 않는다.
         // 그 사이 시스템 바가 떠 있었다면 영상 뷰가 그 영역까지 못 채우므로 여기서 명시적으로 재적용한다.
         hideSystemBars()
 
         Log.d(TAG, "모드 전환: VIDEO")
-    }
-
-    // 페이드아웃 애니메이션이 어떤 이유로든(애니메이터 취소/중단 등) 끝까지 못 가서 이전
-    // 모드 화면이 영상 위에 계속 남는 일이 없도록, FADE_OUT_MS + 여유시간 뒤에 무조건
-    // alpha를 0으로 확정한다. 그 사이 다시 다른 모드로 전환됐으면(currentMode가 VIDEO가
-    // 아니면) 손대지 않는다 - 그 모드가 그 view를 새로 쓰고 있을 수 있기 때문이다.
-    private fun scheduleFadeOutSafetyNet(view: View) {
-        lifecycleScope.launch {
-            delay(PatternAnimator.FADE_OUT_MS + FADE_SAFETY_BUFFER_MS)
-            if (currentMode == Mode.VIDEO) view.alpha = 0f
-        }
     }
 
     // 패턴 모드로 전환 - 영상은 처음 위치로 리셋 후 정지하고, 패턴 뷰도 이전 상태(색상/투명도)를 지우고 초기화한다.
@@ -509,12 +491,6 @@ class MainActivity : ComponentActivity() {
         pendingStartAt = null
         currentMode = Mode.TEXT_SCROLL
         clearColorOverlay()
-        // 영상 모드로 넘어갈 때 크로스페이드로 alpha를 0까지 낮춰뒀을 수 있어서
-        // (handleModeVideo() 참고) 다시 텍스트 모드로 들어올 때 명시적으로 복원해야 한다.
-        // 진행 중이던 페이드 애니메이션이 있으면 먼저 취소해야 그게 뒤늦게 alpha를
-        // 다시 덮어써서 화면이 안 보이는 일이 없다.
-        textScrollView.animate().cancel()
-        textScrollView.alpha = 1f
         textScrollView.visibility = View.VISIBLE
 
         hideSystemBars()
