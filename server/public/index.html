@@ -12,17 +12,18 @@
     <div class="header-info">
       <span id="online-count">온라인: 000 / 000</span>
       <span id="file-status-count" class="file-status-count">파일: 정상 0 / 불일치 0 / 무응답 0</span>
-      <span id="ota-status-count" class="file-status-count">OTA: 대기 0 / 다운 0 / 설치 0 / 완료 0 / 실패 0</span>
-      <span id="version-status-count" class="file-status-count">버전: 확인 안 함</span>
-      <button id="btn-version-toggle" class="btn-small">버전 확인 켜기</button>
+      <span id="battery-status-count" class="file-status-count">배터리: 정상 0 / 낮음 0 / 미충전 0 / 확인불가 0</span>
       <button id="btn-show-id" class="btn-small">ID 표시</button>
       <span id="play-state" class="play-state stopped">■ 정지</span>
       <span id="timecode" class="timecode"></span>
-      <span class="color-status">
-        <span id="color-swatch" class="color-swatch"></span>
-        <span id="color-label">컬러: 없음</span>
-        <button id="btn-color-reset" class="btn-small">초기화</button>
-      </span>
+      <details class="header-details">
+        <summary>OTA/버전</summary>
+        <div class="header-details-content">
+          <span id="ota-status-count" class="file-status-count">OTA: 대기 0 / 다운 0 / 설치 0 / 완료 0 / 실패 0</span>
+          <span id="version-status-count" class="file-status-count">버전: 확인 안 함</span>
+          <button id="btn-version-toggle" class="btn-small">버전 확인 켜기</button>
+        </div>
+      </details>
     </div>
   </header>
 

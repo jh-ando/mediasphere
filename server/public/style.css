@@ -56,19 +56,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.color-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.header-details summary {
+  cursor: pointer;
+  color: #8b93a1;
+  font-size: 15px;
 }
 
-.color-swatch {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: #3a3f4a;
-  border: 1px solid #2f3542;
+.header-details[open] summary {
+  color: #e6e8eb;
+  margin-bottom: 8px;
+}
+
+.header-details-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
 }
 
 .btn-small {
@@ -468,6 +471,7 @@ main {
 }
 
 .device-cell {
+  position: relative;
   aspect-ratio: 1 / 1;
   border-radius: 3px;
   background: #3a3f4a;
@@ -491,6 +495,27 @@ main {
 .device-cell.version-mismatch {
   outline: 2px solid #ef4444;
   outline-offset: 1px;
+}
+
+/* 배터리 이상 - 우측 하단 작은 점으로 표시. ::after라 위 둘(box-shadow/outline)과도 안 겹침.
+   미충전이 더 급한 신호라 둘 다 해당해도 미충전 색이 우선(app.js에서 둘은 상호배타적으로 계산됨). */
+.device-cell.battery-not-charging::after,
+.device-cell.battery-low::after {
+  content: '';
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+}
+
+.device-cell.battery-not-charging::after {
+  background: #a855f7;
+}
+
+.device-cell.battery-low::after {
+  background: #f0b429;
 }
 
 .offline-section {

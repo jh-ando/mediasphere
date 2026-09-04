@@ -266,7 +266,7 @@ class MainActivity : ComponentActivity() {
         timecodeReceiver.start()
 
         // MQTT(wall/control)로 PLAY/STOP/모드전환/패턴 명령 수신 시작
-        mqttManager = MqttManager { message ->
+        mqttManager = MqttManager(applicationContext) { message ->
             // MQTT 콜백에서 ExoPlayer/View 제어 시 runOnUiThread 필수
             runOnUiThread {
                 handleControlMessage(message)

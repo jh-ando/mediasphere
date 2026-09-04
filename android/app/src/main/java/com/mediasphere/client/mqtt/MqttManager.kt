@@ -1,5 +1,7 @@
 package com.mediasphere.client.mqtt
 
+import android.content.Context
+import android.os.BatteryManager
 import android.util.Log
 import com.mediasphere.client.BuildConfig
 import kotlinx.coroutines.CoroutineScope
@@ -175,6 +177,7 @@ sealed class MqttControlMessage {
  * config.json의 mqttBroker 값을 사용하며, 연결이 끊기면 Paho의 자동 재연결에 맡긴다.
  */
 class MqttManager(
+    private val context: Context,
     private val onControl: (MqttControlMessage) -> Unit,
 ) {
     private var client: MqttAsyncClient? = null
@@ -559,6 +562,12 @@ class MqttManager(
             // "배포가 잘 진행됐는지"만 알려줄 뿐, 재부팅 등으로 시간이 지난 뒤 이 폰이 지금
             // 정확히 몇 버전을 실행 중인지는 heartbeat로만 알 수 있다.
             put("versionCode", BuildConfig.VERSION_CODE)
+            // 439대 상시 USB 전원 설치라 배터리 %보다도 "충전 중인지"가 더 중요한 신호다 -
+            // 케이블이 헐거워지거나 전원 어댑터가 나가면 완전 방전으로 꺼지기 몇 시간 전부터
+            // charging=false로 미리 알 수 있다(2026-09).
+            val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            put("batteryPct", batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
+            put("charging", batteryManager.isCharging)
         }.toString()
 
         try {

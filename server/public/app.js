@@ -1,7 +1,9 @@
 const RECONNECT_DELAY_MS = 3000;
+const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "낮음"으로 표시 (미충전은 별도 버킷)
 
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
+const batteryStatusCountEl = document.getElementById('battery-status-count');
 const otaStatusCountEl = document.getElementById('ota-status-count');
 const versionStatusCountEl = document.getElementById('version-status-count');
 const btnVersionToggle = document.getElementById('btn-version-toggle');
@@ -33,9 +35,6 @@ const btnPlaylistSave = document.getElementById('btn-playlist-save');
 const btnPlaylistPlay = document.getElementById('btn-playlist-play');
 const btnPlaylistStop = document.getElementById('btn-playlist-stop');
 const playlistStatusEl = document.getElementById('playlist-status');
-const colorSwatchEl = document.getElementById('color-swatch');
-const colorLabelEl = document.getElementById('color-label');
-const btnColorReset = document.getElementById('btn-color-reset');
 
 const textControlsEl = document.getElementById('text-controls');
 const textContentEl = document.getElementById('text-content');
@@ -120,6 +119,8 @@ function applyStatusUpdate(data) {
   const versions = data.versions || {};
   const latestVersionCode = data.latestVersionCode;
   const versionCounts = { latest: 0, old: 0, unknown: 0 };
+  const battery = data.battery || {};
+  const batteryCounts = { ok: 0, low: 0, notCharging: 0, unknown: 0 };
 
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
@@ -152,12 +153,27 @@ function applyStatusUpdate(data) {
     versionCounts[vKey] += 1;
     if (cell) cell.classList.toggle('version-mismatch', versionCheckEnabled && vKey === 'old');
 
+    // 439대 상시 USB 전원 설치라 배터리 %보다 "충전 중인지"가 더 급한 신호다 - 케이블이
+    // 헐거워지면 완전 방전으로 꺼지기 몇 시간 전부터 미리 알 수 있다.
+    const b = battery[id];
+    const batteryKey = !b ? 'unknown' : !b.charging ? 'notCharging' : b.pct < LOW_BATTERY_PCT ? 'low' : 'ok';
+    batteryCounts[batteryKey] += 1;
+    if (cell) {
+      cell.classList.toggle('battery-not-charging', batteryKey === 'notCharging');
+      cell.classList.toggle('battery-low', batteryKey === 'low');
+      cell.title = b ? `#${id} - 배터리 ${b.pct}% (${b.charging ? '충전 중' : '미충전'})` : `#${id}`;
+    }
+
     if (status === 'offline') offlineIds.push(id);
   }
   lastDevices = data.devices;
 
   fileStatusCountEl.textContent =
     `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
+
+  batteryStatusCountEl.textContent =
+    `배터리: 정상 ${batteryCounts.ok} / 낮음 ${batteryCounts.low} `
+    + `/ 미충전 ${batteryCounts.notCharging} / 확인불가 ${batteryCounts.unknown}`;
 
   otaStatusCountEl.textContent =
     `OTA: 대기 ${otaCounts.idle} / 다운 ${otaCounts.downloading} / 설치 ${otaCounts.installing} `
@@ -179,9 +195,6 @@ function applyStatusUpdate(data) {
     });
     lastColor = currentColorHex;
   }
-
-  colorSwatchEl.style.backgroundColor = currentColorHex || '';
-  colorLabelEl.textContent = currentColorHex ? `컬러: ${currentColorHex}` : '컬러: 없음';
 
   if (data.currentMode) setModeUi(data.currentMode);
 
@@ -353,10 +366,6 @@ btnSequencePlay.addEventListener('click', () => {
 
 btnSequenceStop.addEventListener('click', () => {
   fetch('/api/sequence/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 순차 점멸 정지 요청 실패', err));
-});
-
-btnColorReset.addEventListener('click', () => {
-  fetch('/api/color-reset', { method: 'POST' }).catch((err) => console.error('[HTTP] 컬러 초기화 요청 실패', err));
 });
 
 // duration:0 = 자동으로 안 꺼지고 계속 표시(PATTERN_START의 duration=0과 같은 관례) -

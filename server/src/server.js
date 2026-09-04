@@ -244,6 +244,9 @@ const deviceLastSeen = {};
 // 달리 "지금 이 순간 실제로 실행 중인 버전"을 알려준다 - 재부팅 등으로 시간이 지난 뒤에도
 // heartbeat마다 계속 갱신되므로 대시보드 버전 확인 토글의 근거로 쓴다.
 const deviceVersion = {};
+// deviceId(문자열) -> heartbeat에 실려온 배터리 상태 { pct, charging }. 오프라인이 된 뒤에도
+// "마지막으로 확인된 값"으로 남겨둔다 - 꺼지기 직전 상태 파악에 도움이 된다.
+const deviceBattery = {};
 
 function isDeviceOnline(deviceId) {
   const lastSeen = deviceLastSeen[deviceId];
@@ -573,8 +576,11 @@ mqttClient.on('message', (topic, payload) => {
       if (typeof msg.versionCode === 'number') {
         deviceVersion[statusMatch[1]] = msg.versionCode;
       }
+      if (typeof msg.batteryPct === 'number' && typeof msg.charging === 'boolean') {
+        deviceBattery[statusMatch[1]] = { pct: msg.batteryPct, charging: msg.charging };
+      }
     } catch (err) {
-      // 구버전 앱은 versionCode를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
+      // 구버전 앱은 versionCode/배터리 필드를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
     }
     return;
   }
@@ -1724,6 +1730,7 @@ function buildStatusPayload() {
   const fileStatus = {};
   const otaStatus = {};
   const versions = {};
+  const battery = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
@@ -1733,6 +1740,7 @@ function buildStatusPayload() {
     fileStatus[id] = computeFileStatus(id);
     otaStatus[id] = computeOtaStatus(id);
     if (typeof deviceVersion[id] === 'number') versions[id] = deviceVersion[id];
+    if (deviceBattery[id]) battery[id] = deviceBattery[id];
   }
 
   const appVersion = readAppVersion();
@@ -1745,6 +1753,7 @@ function buildStatusPayload() {
     fileStatus,
     otaStatus,
     versions,
+    battery,
     latestVersionCode: appVersion ? appVersion.versionCode : null,
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
