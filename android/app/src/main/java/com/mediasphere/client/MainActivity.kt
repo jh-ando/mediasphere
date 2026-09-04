@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -130,6 +131,16 @@ class MainActivity : ComponentActivity() {
     // 건너뛰는 문제가 있었다(영상교체 배포 시 439대 동시 다운로드 폭주로 일부가 타임아웃
     // 실패한 뒤 앱을 재시작하기 전엔 스스로 복구가 안 되던 원인, 2026-09).
     private var lastSyncedConfig: MqttControlMessage.DeviceConfig? = null
+
+    // syncVideoFile()이 실행한 코루틴 - 새 config/CHECK_UPDATE로 또 호출되면 이전 걸 취소하고
+    // 새로 시작한다. 재배포 직후엔 개별 config(retain) 수신과 지연 CHECK_UPDATE, 거기다 재연결
+    // 겹침까지 같은 폰에 동기화 트리거가 몰릴 수 있는데, 취소 없이 그냥 둘 다 돌게 두면 한
+    // 코루틴이 다운로드 완료로 파일을 교체(rename)하는 순간 다른 코루틴이 그 파일의 체크섬을
+    // 읽으려다 FileNotFoundException으로 죽는 레이스가 있었다(실기기에서 확인, 2026-09) -
+    // 이 예외 자체도 아래서 못 잡고 있어서 앱 전체가 크래시했다. 재배포가 끝난 직후뿐 아니라,
+    // 다운로드에 실패해 lastSyncedConfig가 못 갱신된 폰은 이후 아무 때나(몇 시간 뒤라도) 재연결이
+    // 겹치면 같은 레이스가 재현될 수 있다.
+    private var syncJob: Job? = null
 
     // 지금 ExoPlayer에 실제로 로드돼 있는 파일 - 동기화 결과가 이미 적용된 파일과 같으면
     // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
@@ -865,18 +876,28 @@ class MainActivity : ComponentActivity() {
     private fun syncVideoFile(config: MqttControlMessage.DeviceConfig) {
         val videoPath = config.videoPath
         val currentVideo = config.currentVideo
-        lifecycleScope.launch(Dispatchers.IO) {
+        syncJob?.cancel()
+        syncJob = lifecycleScope.launch(Dispatchers.IO) {
             val dest = File(videoPath, "$currentVideo.mp4")
             val serverIp = readServerIp()
             val expected = config.checksum?.removePrefix("sha256:")
 
             var checksum: String? = null
             if (dest.exists()) {
-                val localChecksum = sha256Of(dest)
-                if (expected == null || localChecksum == expected) {
-                    checksum = localChecksum
-                } else {
-                    Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
+                try {
+                    val localChecksum = sha256Of(dest)
+                    if (expected == null || localChecksum == expected) {
+                        checksum = localChecksum
+                    } else {
+                        Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
+                    }
+                } catch (e: IOException) {
+                    // 취소해도 downloadOnce()의 블로킹 I/O 도중이면 그 시도가 끝날 때까지는
+                    // 안 멈추므로, 다른 syncVideoFile() 코루틴이 이 순간 다운로드 완료로 같은
+                    // 파일을 rename하고 있으면 여기서 파일이 잠깐 없어 보일 수 있다(실기기에서
+                    // FileNotFoundException으로 앱이 죽는 걸 확인) - 크래시 대신 재다운로드로
+                    // 자연스럽게 복구한다(2026-09).
+                    Log.d(SYNC_TAG, "로컬 파일 읽기 실패(동시 동기화와 겹쳤을 수 있음) - 재다운로드 - $currentVideo", e)
                 }
             }
 
