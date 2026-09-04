@@ -16,6 +16,8 @@
     <!-- OTA 무인 설치(PackageInstaller)용. Device Owner 상태에서는 이 권한 선언 없이도
          설치가 되는 것으로 보이나, 문서상 애매해 우선 선언해둠 - 실기기 테스트 후 불필요하면 제거 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 기기 재부팅 후 BootReceiver가 앱을 자동 실행하기 위해 필요 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:usesCleartextTraffic="true"
@@ -42,12 +44,31 @@
             </intent-filter>
         </activity>
 
+        <!-- MainActivity.restartProcess()가 프로세스를 완전히 재시작할 때 거치는 중계
+             액티비티 - 별도 프로세스에서 돌아서 MainActivity의 프로세스가 죽어도
+             영향을 안 받는다(RestartBridgeActivity 주석 참고). -->
+        <activity
+            android:name=".RestartBridgeActivity"
+            android:process=":restart_bridge"
+            android:exported="false" />
+
         <!-- OTA로 앱이 갱신된 직후 시스템이 보내는 브로드캐스트 - MainActivity를 재실행한다 -->
         <receiver
             android:name=".update.UpdateReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 기기 재부팅 직후 시스템이 보내는 브로드캐스트 - MainActivity를 자동 실행한다.
+             Lock Task Mode(MainActivity.enableKioskLockTask())는 앱이 죽었을 때만 재실행해주고
+             기기 재부팅까지는 못 막아서, 재부팅 후 첫 실행을 이게 담당한다. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

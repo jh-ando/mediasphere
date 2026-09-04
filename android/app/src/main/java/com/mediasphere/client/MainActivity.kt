@@ -3,10 +3,10 @@ package com.mediasphere.client
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.AlarmManager
-import android.app.PendingIntent
+import android.app.admin.DevicePolicyManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -211,6 +211,11 @@ class MainActivity : ComponentActivity() {
 
         // Scoped Storage 우회 권한(MANAGE_EXTERNAL_STORAGE) 확인 - 없으면 설정 화면으로 이동
         checkManageExternalStoragePermission()
+
+        // 키오스크 잠금 모드 - 켜지면 앱이 크래시로 죽어도 시스템이 자동으로 다시 띄워준다.
+        // 무선디버깅이 꺼져 있고 현장에 갈 수도 없을 때 원격으로 앱을 되살릴 방법이 없던
+        // 문제의 해결책(2026-09).
+        enableKioskLockTask()
 
         setContentView(R.layout.activity_main)
         playerView = findViewById(R.id.playerView)
@@ -904,28 +909,18 @@ class MainActivity : ComponentActivity() {
         restartProcess()
     }
 
-    // 안드로이드엔 "내 프로세스를 재시작"하는 공식 API가 없어서, 앱을 다시 실행할
-    // PendingIntent를 AlarmManager에 잠깐 뒤로 예약해두고 지금 프로세스를 강제 종료하는
-    // 방식을 쓴다(킥오스크성 앱들이 흔히 쓰는 방법) - 종료 직후 예약된 인텐트가 실행되며
-    // 완전히 새 프로세스로 앱이 뜬다. recreate()와 달리 JVM 힙/네이티브 리소스/싱글턴
-    // 상태가 전부 깨끗하게 초기화된다.
+    // 안드로이드엔 "내 프로세스를 재시작"하는 공식 API가 없다. 처음엔 AlarmManager로 재실행
+    // 인텐트를 예약해두고 지금 프로세스를 죽이는 방식을 썼는데, 최신 안드로이드(백그라운드
+    // 액티비티 실행 제한)에서 AlarmManager가 나중에 발화시키는 PendingIntent는 "포그라운드가
+    // 아닌 상태에서 액티비티를 띄우려는 시도"로 취급돼 차단당했다 - 실기기에서 앱이 꺼진 채로
+    // 안 켜지는 문제로 확인됨(2026-09). 그래서 별도 프로세스에서 도는 중계 액티비티
+    // (RestartBridgeActivity)를 거치는 방식으로 바꿨다: 지금 포그라운드인 MainActivity가
+    // 그 중계를 띄우는 건 제한에 안 걸리고, 중계 액티비티 자신도 막 시작되어 포그라운드
+    // 상태이므로 거기서 MainActivity를 다시 띄우는 것도 제한에 안 걸린다.
     private fun restartProcess() {
-        val intent = packageManager.getLaunchIntentForPackage(packageName)
-        if (intent == null) {
-            Log.e(TAG, "프로세스 재시작 실패 - launch intent를 찾을 수 없음")
-            return
-        }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-
-        val pendingIntent = PendingIntent.getActivity(
-            applicationContext,
-            0,
-            intent,
-            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        startActivity(
+            Intent(this, RestartBridgeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.set(AlarmManager.RTC, System.currentTimeMillis() + 500, pendingIntent)
-
         Runtime.getRuntime().exit(0)
     }
 
@@ -1108,5 +1103,23 @@ class MainActivity : ComponentActivity() {
         } catch (e: ActivityNotFoundException) {
             startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
         }
+    }
+
+    // Device Owner 상태에서만 동작한다(OTA 무인 설치와 같은 전제 - DeviceAdminReceiver 참고).
+    // setLockTaskPackages()로 이 앱을 허용 목록에 올린 뒤 startLockTask()로 잠그면, 시스템이
+    // "이 앱은 항상 떠 있어야 한다"고 보고 크래시로 죽었을 때 자동으로 다시 실행해준다 -
+    // 원격 ADB도 없고 현장에 사람이 갈 수도 없는 상황에서 유일한 자동 복구 수단이다.
+    // Device Owner가 아닌 개발/테스트 기기에서는 조용히 건너뛴다.
+    private fun enableKioskLockTask() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(packageName)) {
+            Log.d(TAG, "Device Owner 아님 - Lock Task Mode 건너뜀")
+            return
+        }
+
+        val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+        dpm.setLockTaskPackages(admin, arrayOf(packageName))
+        startLockTask()
+        Log.d(TAG, "Lock Task Mode 시작 - 크래시 시 시스템이 자동 재실행")
     }
 }
