@@ -67,8 +67,16 @@ sealed class MqttControlMessage {
     object ModeText : MqttControlMessage()
 
     // 패턴(점멸) 시작 - color는 "#RRGGBB" 형태의 원본 문자열 그대로 전달한다.
-    data class PatternStart(val color: String, val interval: Long, val duration: Long, val startAt: Long) :
-        MqttControlMessage()
+    // colorMode="random"이면 color는 무시되고 폰마다 자기 화면에서 직접 무작위 색을 뽑는다
+    // (439대가 각자 독립적으로 뽑으므로 서버/대시보드는 실제로 어떤 색 조합이 나왔는지 모른다 -
+    // 텍스트 스크롤처럼 "파라미터만 방송, 폰이 로컬 처리" 원칙을 그대로 따른 설계, 2026-09).
+    data class PatternStart(
+        val color: String,
+        val interval: Long,
+        val duration: Long,
+        val startAt: Long,
+        val colorMode: String,
+    ) : MqttControlMessage()
     object PatternStop : MqttControlMessage()
 
     // 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
@@ -79,6 +87,7 @@ sealed class MqttControlMessage {
         val stepDelay: Long,
         val startAt: Long,
         val totalDevices: Int,
+        val colorMode: String,
     ) : MqttControlMessage()
     object SequenceStop : MqttControlMessage()
 
@@ -388,6 +397,7 @@ class MqttManager(
                     interval = json.getLong("interval"),
                     duration = json.getLong("duration"),
                     startAt = json.getLong("startAt"),
+                    colorMode = json.optString("colorMode", "fixed"),
                 )
                 "PATTERN_STOP" -> MqttControlMessage.PatternStop
                 "SEQUENCE_START" -> MqttControlMessage.SequenceStart(
@@ -397,6 +407,7 @@ class MqttManager(
                     stepDelay = json.getLong("stepDelay"),
                     startAt = json.getLong("startAt"),
                     totalDevices = json.getInt("totalDevices"),
+                    colorMode = json.optString("colorMode", "fixed"),
                 )
                 "SEQUENCE_STOP" -> MqttControlMessage.SequenceStop
                 "SHOW_ID" -> MqttControlMessage.ShowId(

@@ -22,6 +22,7 @@ const btnIdle = document.getElementById('btn-idle');
 const videoControlsEl = document.getElementById('video-controls');
 const patternControlsEl = document.getElementById('pattern-controls');
 const patternColorEl = document.getElementById('pattern-color');
+const patternColorRandomEl = document.getElementById('pattern-color-random');
 const patternIntervalEl = document.getElementById('pattern-interval');
 const patternDurationEl = document.getElementById('pattern-duration');
 const patternStepDelayEl = document.getElementById('pattern-step-delay');
@@ -203,6 +204,8 @@ function applyStatusUpdate(data) {
     patternIntervalEl.value = data.patternConfig.interval;
     patternDurationEl.value = data.patternConfig.duration;
     patternStepDelayEl.value = data.patternConfig.stepDelay;
+    patternColorRandomEl.checked = data.patternConfig.colorMode === 'random';
+    patternColorEl.disabled = patternColorRandomEl.checked;
   }
 
   if (data.textScrollConfig && !editingTextConfig) {
@@ -248,6 +251,7 @@ function sendPatternConfig() {
     interval: Number(patternIntervalEl.value),
     duration: Number(patternDurationEl.value),
     stepDelay: Number(patternStepDelayEl.value),
+    colorMode: patternColorRandomEl.checked ? 'random' : 'fixed',
   }).catch((err) => console.error('[HTTP] 패턴 설정 저장 실패', err));
 }
 
@@ -331,6 +335,11 @@ btnIdle.addEventListener('click', () => {
     editingPatternConfig = false;
   });
   el.addEventListener('change', sendPatternConfig);
+});
+
+patternColorRandomEl.addEventListener('change', () => {
+  patternColorEl.disabled = patternColorRandomEl.checked;
+  sendPatternConfig();
 });
 
 [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
@@ -511,7 +520,17 @@ function createCueRow(cue, index) {
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = cue.color;
+  colorInput.disabled = cue.colorMode === 'random';
   colorInput.addEventListener('input', () => { playlistCues[index].color = colorInput.value; });
+
+  const colorRandomInput = document.createElement('input');
+  colorRandomInput.type = 'checkbox';
+  colorRandomInput.title = '켜면 색상을 무시하고 폰마다 각자 무작위 색을 표시합니다';
+  colorRandomInput.checked = cue.colorMode === 'random';
+  colorRandomInput.addEventListener('change', () => {
+    playlistCues[index].colorMode = colorRandomInput.checked ? 'random' : 'fixed';
+    colorInput.disabled = colorRandomInput.checked;
+  });
 
   const intervalInput = document.createElement('input');
   intervalInput.type = 'number';
@@ -574,7 +593,7 @@ function createCueRow(cue, index) {
   label.textContent = `#${index + 1}`;
 
   row.append(
-    label, colorInput, intervalInput, durationInput, stepDelayInput, modeSelect,
+    label, colorInput, colorRandomInput, intervalInput, durationInput, stepDelayInput, modeSelect,
     moveUpBtn, moveDownBtn, deleteBtn,
   );
   return row;
@@ -629,7 +648,7 @@ function applyPlaylistProgress(data) {
 }
 
 btnPlaylistAddCue.addEventListener('click', () => {
-  playlistCues.push({ color: '#ffffff', interval: 500, duration: 3000, stepDelay: 200, mode: 'all' });
+  playlistCues.push({ color: '#ffffff', colorMode: 'fixed', interval: 500, duration: 3000, stepDelay: 200, mode: 'all' });
   renderPlaylistCues();
 });
 

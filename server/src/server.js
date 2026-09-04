@@ -102,6 +102,10 @@ const state = {
     interval: 500,
     duration: 3000,
     stepDelay: 200,
+    // "fixed"면 color를 그대로 쓰고, "random"이면 색을 무시하고 각 폰이 자기 화면에서
+    // 직접 무작위 색을 뽑는다(서버는 439대가 실제로 뽑은 색을 모른다) - 파라미터만
+    // 방송하고 폰이 로컬에서 처리하는 기존 원칙과 동일한 설계.
+    colorMode: 'fixed',
   },
   // 패턴 재생목록 - 큐(cue) 배열을 순서대로 재생한다. 각 큐: { color, interval, duration,
   // stepDelay, mode: "all"|"sequence" }. duration=0(무한 반복)은 재생목록에서 못 쓴다 -
@@ -773,11 +777,18 @@ app.post('/api/idle', (req, res) => {
 
 // 패턴 설정 저장 (발행하지 않음 - PATTERN_START 시점에 이 값을 사용한다)
 app.post('/api/pattern/config', (req, res) => {
-  const { color, interval, duration, stepDelay } = req.body;
+  const { color, interval, duration, stepDelay, colorMode } = req.body;
   if (color !== undefined) state.patternConfig.color = color;
   if (interval !== undefined) state.patternConfig.interval = interval;
   if (duration !== undefined) state.patternConfig.duration = duration;
   if (stepDelay !== undefined) state.patternConfig.stepDelay = stepDelay;
+  if (colorMode !== undefined) {
+    if (colorMode !== 'fixed' && colorMode !== 'random') {
+      res.status(400).json({ success: false, error: 'colorMode는 "fixed" 또는 "random"이어야 합니다.' });
+      return;
+    }
+    state.patternConfig.colorMode = colorMode;
+  }
   savePatternConfig();
 
   console.log(`[HTTP] 패턴 설정 저장 - ${JSON.stringify(state.patternConfig)}`);
@@ -793,6 +804,7 @@ app.post('/api/pattern/start', (req, res) => {
       interval: state.patternConfig.interval,
       duration: state.patternConfig.duration,
       startAt: Date.now() + 500,
+      colorMode: state.patternConfig.colorMode,
     },
     { retain: false },
   );
@@ -859,13 +871,21 @@ function runCue(index) {
         stepDelay: cue.stepDelay,
         startAt: Date.now() + leadMs,
         totalDevices,
+        colorMode: cue.colorMode || 'fixed',
       },
       { retain: false },
     );
     waitMs = leadMs + cue.duration + FADE_OUT_MS;
   } else {
     publishControl(
-      { type: 'PATTERN_START', color: cue.color, interval: cue.interval, duration: cue.duration, startAt: Date.now() + leadMs },
+      {
+        type: 'PATTERN_START',
+        color: cue.color,
+        interval: cue.interval,
+        duration: cue.duration,
+        startAt: Date.now() + leadMs,
+        colorMode: cue.colorMode || 'fixed',
+      },
       { retain: false },
     );
     waitMs = leadMs + cue.duration + FADE_OUT_MS;
@@ -929,6 +949,11 @@ app.post('/api/pattern/playlist', (req, res) => {
     }
     if (cue.mode !== 'all' && cue.mode !== 'sequence') {
       res.status(400).json({ ok: false, error: `${i + 1}번째 큐: mode는 "all" 또는 "sequence"여야 합니다.` });
+      return;
+    }
+    // colorMode는 이전에 저장된 재생목록엔 없을 수 있어(하위호환) 생략 가능 - 생략 시 fixed로 취급.
+    if (cue.colorMode !== undefined && cue.colorMode !== 'fixed' && cue.colorMode !== 'random') {
+      res.status(400).json({ ok: false, error: `${i + 1}번째 큐: colorMode는 "fixed" 또는 "random"이어야 합니다.` });
       return;
     }
   }
@@ -1181,6 +1206,7 @@ app.post('/api/sequence/start', (req, res) => {
       stepDelay: state.patternConfig.stepDelay,
       startAt: Date.now() + 500,
       totalDevices,
+      colorMode: state.patternConfig.colorMode,
     },
     { retain: false },
   );

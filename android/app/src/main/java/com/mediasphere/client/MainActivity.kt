@@ -49,6 +49,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import kotlin.random.Random
 
 private const val TAG = "[Player]"
 private const val PATTERN_TAG = "[Pattern]"
@@ -606,18 +607,29 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
 
-            val color = try {
-                Color.parseColor(message.color)
-            } catch (e: IllegalArgumentException) {
-                Log.e(PATTERN_TAG, "색상 파싱 실패 - ${message.color}", e)
-                return@launch
-            }
+            val color = resolveBlinkColor(message.colorMode, message.color) ?: return@launch
             TextPatternAnimator.stop()
             // duration=0(무한)이 아니면 "시작 시각 + 지속시간"을 절대 종료 시각으로 넘긴다 -
             // 전체 점멸은 모든 폰이 동시에 시작하므로 상대/절대가 같은 값이라 동작은 그대로다
             // (SequenceStart 쪽과 계산 방식을 통일하기 위한 변경, 2026-09).
             val stopAt = if (message.duration > 0) message.startAt + message.duration else null
             PatternAnimator.startBlink(color, message.interval, stopAt)
+        }
+    }
+
+    // colorMode="random"이면 message.color를 무시하고 이 폰이 직접 무작위 색을 하나 뽑는다 -
+    // 439대가 각자 독립적으로 뽑으므로 서버는 실제 색 조합을 모른다(파라미터만 방송하고
+    // 폰이 로컬에서 처리하는 기존 원칙과 동일, 2026-09). 색상(Hue)만 0~360도 무작위로 돌리고
+    // 채도/명도는 최대로 고정해 탁한 색 없이 선명한 색만 나오게 한다.
+    private fun resolveBlinkColor(colorMode: String, colorHex: String): Int? {
+        if (colorMode == "random") {
+            return Color.HSVToColor(floatArrayOf(Random.nextFloat() * 360f, 1f, 1f))
+        }
+        return try {
+            Color.parseColor(colorHex)
+        } catch (e: IllegalArgumentException) {
+            Log.e(PATTERN_TAG, "색상 파싱 실패 - $colorHex", e)
+            null
         }
     }
 
@@ -649,12 +661,7 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
 
-            val color = try {
-                Color.parseColor(message.color)
-            } catch (e: IllegalArgumentException) {
-                Log.e(PATTERN_TAG, "색상 파싱 실패 - ${message.color}", e)
-                return@launch
-            }
+            val color = resolveBlinkColor(message.colorMode, message.color) ?: return@launch
             TextPatternAnimator.stop()
             // duration=0(무한)이 아니면 "그룹 시작 시각(message.startAt) + 큐 전체 지속시간"을
             // 절대 종료 시각으로 넘긴다 - 내가 시작한 뒤로부터가 아니라 전 폰이 공유하는 절대
