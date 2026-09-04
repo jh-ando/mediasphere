@@ -142,6 +142,11 @@ body {
   color: #9aa1ad;
 }
 
+.mode-btn.btn-idle.active {
+  background: #2f3542;
+  color: #e6e8eb;
+}
+
 .control-group {
   display: flex;
   flex-wrap: wrap;

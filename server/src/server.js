@@ -100,6 +100,11 @@ const state = {
   stoppedElapsedMs: 0,
   // currentMode: "video" | "pattern" | "text" - 세 모드는 상호 배타적이다.
   currentMode: 'video',
+  // 절전 모드는 currentMode='pattern'을 재사용하는 것뿐이라(POST /api/idle), 대시보드가
+  // "패턴 모드를 실제로 고른 것"과 구분해서 절전 모드를 독립된 탭처럼 보여주려면 별도
+  // 플래그가 필요하다 - 사용자가 그 외의 어떤 동작(모드 전환, 재생, 패턴/순차 점멸,
+  // 재생목록/텍스트 시작)이라도 하면 즉시 꺼진다(각 핸들러에서 명시적으로 false 처리).
+  idleMode: false,
   patternConfig: {
     color: '#FFFFFF',
     interval: 500,
@@ -686,6 +691,7 @@ function triggerPlay() {
   // 안 밀린다(화면 전환만 부드럽게 겹쳐 보임). 이미 영상 모드였으면 별다른 변화 없이
   // 그냥 다시 같은 모드로 전환하는 것뿐이라 안전하다.
   state.currentMode = 'video';
+  state.idleMode = false;
   publishControl({ type: MODE_MQTT_TYPES.video });
 
   state.isPlaying = true;
@@ -758,6 +764,7 @@ app.post('/api/mode', (req, res) => {
   }
 
   state.currentMode = mode;
+  state.idleMode = false;
   publishControl({ type: MODE_MQTT_TYPES[mode] });
 
   console.log(`[HTTP] 모드 전환 - ${mode}`);
@@ -774,6 +781,7 @@ app.post('/api/idle', (req, res) => {
   if (playlistState.playing) stopPlaylist();
 
   state.currentMode = 'pattern';
+  state.idleMode = true;
   publishControl({ type: MODE_MQTT_TYPES.pattern });
 
   console.log('[HTTP] 절전 모드 전환 - 화면 검게');
@@ -809,6 +817,7 @@ app.post('/api/pattern/config', (req, res) => {
 
 // 패턴(점멸) 시작 - 500ms 뒤를 startAt으로 잡아 폰들이 동시에 시작할 여유를 준다.
 app.post('/api/pattern/start', (req, res) => {
+  state.idleMode = false;
   publishControl(
     {
       type: 'PATTERN_START',
@@ -992,6 +1001,7 @@ function startPlaylist() {
   if (state.patternPlaylist.cues.length === 0) {
     throw new Error('재생목록이 비어 있습니다.');
   }
+  state.idleMode = false;
   if (playlistTimer) clearTimeout(playlistTimer);
   playlistState = { playing: true, currentCueIndex: -1 };
 
@@ -1043,6 +1053,7 @@ function startTextScroll() {
     throw new Error('manifest가 없거나 devices[].meta.row 정보가 없습니다 - '
       + 'deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.');
   }
+  state.idleMode = false;
 
   const cfg = state.textScrollConfig;
   const centerRow = computeCenterRow();
@@ -1216,6 +1227,7 @@ app.post('/api/text-pattern/stop', (req, res) => {
 // 순차 점멸 시작 - 폰마다 deviceId 순서대로 stepDelay만큼 늦게 시작한다.
 // totalDevices는 현재 online 상태인 기기 수만 센다.
 app.post('/api/sequence/start', (req, res) => {
+  state.idleMode = false;
   const totalDevices = Object.keys(deviceLastSeen).filter((id) => isDeviceOnline(id)).length;
 
   publishControl(
@@ -1805,6 +1817,7 @@ function buildStatusPayload() {
     latestVersionCode: appVersion ? appVersion.versionCode : null,
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
+    idleMode: state.idleMode,
     patternConfig: state.patternConfig,
     textScrollConfig: state.textScrollConfig,
     textPatternConfig: state.textPatternConfig,

@@ -198,7 +198,7 @@ function applyStatusUpdate(data) {
     lastColor = currentColorHex;
   }
 
-  if (data.currentMode) setModeUi(data.currentMode);
+  if (data.currentMode) setModeUi(data.currentMode, data.idleMode);
 
   if (data.patternConfig && !editingPatternConfig) {
     patternColorEl.value = data.patternConfig.color;
@@ -225,14 +225,18 @@ function applyStatusUpdate(data) {
 
 // 모드 토글 강조 표시 + 그 모드에 쓰는 컨트롤 그룹만 보여준다(나머지는 hidden으로
 // 화면에서 아예 빠짐 - 예전엔 전부 항상 그려두고 흐리게(disabled)만 했었음).
-function setModeUi(mode) {
-  const isVideo = mode === 'video';
-  const isPattern = mode === 'pattern';
-  const isText = mode === 'text';
+// 절전 모드는 서버 내부적으론 currentMode='pattern'을 재사용하지만(POST /api/idle),
+// 대시보드에서는 독립된 탭처럼 보이게 한다 - idleMode가 true면 세 모드 탭 중 아무것도
+// 활성화하지 않고 컨트롤 그룹도 전부 숨겨서 재생 관련 메뉴가 하나도 안 보이게 한다.
+function setModeUi(mode, idleMode) {
+  const isVideo = !idleMode && mode === 'video';
+  const isPattern = !idleMode && mode === 'pattern';
+  const isText = !idleMode && mode === 'text';
 
   modeVideoBtn.classList.toggle('active', isVideo);
   modePatternBtn.classList.toggle('active', isPattern);
   modeTextBtn.classList.toggle('active', isText);
+  btnIdle.classList.toggle('active', Boolean(idleMode));
 
   videoControlsEl.hidden = !isVideo;
   patternControlsEl.hidden = !isPattern;
@@ -331,8 +335,9 @@ modeTextBtn.addEventListener('click', () => {
   postJson('/api/mode', { mode: 'text' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
 });
 
-// 절전 모드는 별도 상태가 아니라 패턴 모드로 전환하는 편의 버튼이라, 눌러도 이 버튼
-// 자체는 활성 표시를 갖지 않는다 - STATUS_UPDATE가 오면 패턴 모드 탭이 활성화되어 보인다.
+// 서버 내부적으로는 패턴 모드로 전환하는 것뿐이지만(POST /api/idle), 대시보드에는
+// idleMode 플래그로 내려와 독립된 탭처럼 활성 표시되고 다른 컨트롤은 다 숨겨진다
+// (setModeUi 참고). 클릭 자체는 여기서 상태를 바꾸지 않고 STATUS_UPDATE를 기다린다.
 btnIdle.addEventListener('click', () => {
   fetch('/api/idle', { method: 'POST' }).catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
 });
