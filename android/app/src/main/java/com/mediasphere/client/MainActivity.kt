@@ -3,6 +3,8 @@ package com.mediasphere.client
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -887,8 +889,10 @@ class MainActivity : ComponentActivity() {
     }
 
     // RESTART_APP - targetDeviceIds가 없으면(전체 대상) 무조건, 있으면 내 deviceId가
-    // 포함된 경우에만 Activity를 재시작한다. onDestroy -> onCreate가 다시 돌면서
-    // config.json 재읽기, ExoPlayer/MQTT 재생성이 전부 처음부터 다시 이뤄진다.
+    // 포함된 경우에만 재시작한다. recreate()는 같은 프로세스 안에서 Activity만 다시
+    // 만드는 것뿐이라 object 싱글턴(TimeSyncManager, PatternAnimator 등)의 내부 상태나
+    // 누적된 메모리는 그대로 남는다 - 진짜 프로세스를 새로 띄우려면 프로세스 자체를
+    // 종료해야 해서 restartProcess()로 바꿨다(2026-09).
     private fun handleRestartApp(message: MqttControlMessage.RestartApp) {
         val targets = message.targetDeviceIds
         val myId = mqttManager.deviceId()
@@ -896,8 +900,33 @@ class MainActivity : ComponentActivity() {
             Log.d(TAG, "RESTART_APP 수신 - 대상 아님(내 deviceId=$myId)")
             return
         }
-        Log.d(TAG, "RESTART_APP 수신 - 재시작 (대상=${targets ?: "전체"})")
-        recreate()
+        Log.d(TAG, "RESTART_APP 수신 - 프로세스 재시작 (대상=${targets ?: "전체"})")
+        restartProcess()
+    }
+
+    // 안드로이드엔 "내 프로세스를 재시작"하는 공식 API가 없어서, 앱을 다시 실행할
+    // PendingIntent를 AlarmManager에 잠깐 뒤로 예약해두고 지금 프로세스를 강제 종료하는
+    // 방식을 쓴다(킥오스크성 앱들이 흔히 쓰는 방법) - 종료 직후 예약된 인텐트가 실행되며
+    // 완전히 새 프로세스로 앱이 뜬다. recreate()와 달리 JVM 힙/네이티브 리소스/싱글턴
+    // 상태가 전부 깨끗하게 초기화된다.
+    private fun restartProcess() {
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent == null) {
+            Log.e(TAG, "프로세스 재시작 실패 - launch intent를 찾을 수 없음")
+            return
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            0,
+            intent,
+            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.set(AlarmManager.RTC, System.currentTimeMillis() + 500, pendingIntent)
+
+        Runtime.getRuntime().exit(0)
     }
 
     // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드한다. 파일이 이미
