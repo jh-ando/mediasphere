@@ -55,6 +55,10 @@ private const val SYNC_TAG = "[FileSync]"
 // config.json 읽기 실패 등으로 videoPath/currentVideo를 못 구했을 때만 쓰는 최후 fallback
 private const val DEFAULT_VIDEO_PATH = "/sdcard/mediasphere/videos/test.mp4"
 private const val START_DELAY_MS = 1000L // 시작 신호 수신 후 재생 전 대기 시간 - 초기 drift가 크게 나는 것을 방지
+// 패턴/텍스트 -> 영상 전환 페이드아웃이 애니메이터 문제 등 어떤 이유로든 제대로 안 끝나면
+// 이전 모드 화면이 영상 위에 계속 남아있는 문제가 있었다 - FADE_OUT_MS가 지나고도 이만큼
+// 더 지나면 애니메이션 상태와 무관하게 무조건 alpha를 0으로 확정 짓는 안전장치를 둔다.
+private const val FADE_SAFETY_BUFFER_MS = 300L
 // TimeSyncManager 재동기화 주기. 영상 모드는 DriftCorrector가 초당 30회 오는 UDP
 // 타임코드로 계속 보정하지만, 텍스트/패턴 모드는 UDP 타임코드를 안 받아서 이 재동기화가
 // 유일한 기준이다 - 주기가 길수록 그 사이 폰 시계 편차가 그대로 누적된다(1분일 때 특정
@@ -402,8 +406,19 @@ class MainActivity : ComponentActivity() {
     // 영상 모드로 전환 - 패턴 리소스를 완전히 정리하고, 영상은 처음 위치로 리셋해 재생 대기 상태로 되돌린다.
     // (PLAY 명령을 새로 받기 전까지는 자동 재생하지 않는다)
     private fun handleModeVideo() {
-        pendingPatternJob?.cancel()
         val previousMode = currentMode
+
+        // MODE_VIDEO는 retain+QoS1이라 재연결/재전송으로 중복 수신될 수 있다 - 이미 영상
+        // 모드인데 또 받았다고 매번 seekTo(0)+pause를 하면, 잘 재생되고 있던 영상이 중복
+        // 메시지 하나로 갑자기 처음으로 되감기면서 멈춰버린다(실기기에서 확인된 버그).
+        // 정말로 처음부터 다시 재생하고 싶은 경우(대시보드 PLAY 버튼 등)는 이 메시지가 아니라
+        // 뒤이어 오는 별도의 PLAY 메시지가 담당하므로, 여기서는 조용히 무시해도 된다.
+        if (previousMode == Mode.VIDEO) {
+            Log.d(TAG, "MODE_VIDEO 중복 수신 - 이미 영상 모드라 무시")
+            return
+        }
+
+        pendingPatternJob?.cancel()
 
         // playerView는 항상 patternView/textScrollView 아래 깔려 있으므로(activity_main.xml
         // 뷰 순서 참고), 여기서 바로 보이게 해도 위에 남은 패턴/텍스트가 아직 덮고 있다 -
@@ -417,15 +432,17 @@ class MainActivity : ComponentActivity() {
         pendingStartAt = null
         currentMode = Mode.VIDEO
 
-        // 패턴/텍스트 모드에서 넘어올 때만 페이드아웃한다 - 이미 영상 모드였으면 할 일 없음.
+        // 패턴/텍스트 모드에서 넘어올 때 페이드아웃한다(위에서 이미 VIDEO -> VIDEO 중복은 걸러짐).
         when (previousMode) {
             Mode.PATTERN -> {
                 TextPatternAnimator.stop()
                 PatternAnimator.fadeOutThenStop()
+                scheduleFadeOutSafetyNet(patternView)
             }
             Mode.TEXT_SCROLL -> {
                 textScrollView.stop() // 마지막 프레임을 고정시킨 뒤 그 상태로 페이드아웃
                 textScrollView.animate().alpha(0f).setDuration(PatternAnimator.FADE_OUT_MS).start()
+                scheduleFadeOutSafetyNet(textScrollView)
             }
             Mode.VIDEO -> {}
         }
@@ -435,6 +452,17 @@ class MainActivity : ComponentActivity() {
         hideSystemBars()
 
         Log.d(TAG, "모드 전환: VIDEO")
+    }
+
+    // 페이드아웃 애니메이션이 어떤 이유로든(애니메이터 취소/중단 등) 끝까지 못 가서 이전
+    // 모드 화면이 영상 위에 계속 남는 일이 없도록, FADE_OUT_MS + 여유시간 뒤에 무조건
+    // alpha를 0으로 확정한다. 그 사이 다시 다른 모드로 전환됐으면(currentMode가 VIDEO가
+    // 아니면) 손대지 않는다 - 그 모드가 그 view를 새로 쓰고 있을 수 있기 때문이다.
+    private fun scheduleFadeOutSafetyNet(view: View) {
+        lifecycleScope.launch {
+            delay(PatternAnimator.FADE_OUT_MS + FADE_SAFETY_BUFFER_MS)
+            if (currentMode == Mode.VIDEO) view.alpha = 0f
+        }
     }
 
     // 패턴 모드로 전환 - 영상은 처음 위치로 리셋 후 정지하고, 패턴 뷰도 이전 상태(색상/투명도)를 지우고 초기화한다.

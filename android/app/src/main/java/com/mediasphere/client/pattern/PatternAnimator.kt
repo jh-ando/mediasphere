@@ -24,8 +24,12 @@ object PatternAnimator {
     // 시간만큼 서서히 어두워진 뒤에 멈춘다. MainActivity가 텍스트 스크롤→영상 전환의
     // 페이드아웃 시간도 이 값으로 맞춰서 쓴다(PatternAnimator.FADE_OUT_MS로 참조).
     // server.js의 같은 이름 상수(재생목록 큐 전환 대기시간 계산에 이만큼을 추가로 더함)와
-    // 반드시 같은 값을 써야 한다.
-    const val FADE_OUT_MS = 500L
+    // 반드시 같은 값을 써야 한다. 1초로 잡은 이유: PLAY_TRIGGER로 패턴/텍스트→영상 전환 시
+    // 이 페이드와 별개로 재생 시작 자체가 START_DELAY_MS(1초)만큼 대기하는데, 둘 다 MODE_VIDEO/
+    // PLAY가 거의 동시에 도착하는 시점(t=0)에서 나란히 출발하므로 값을 맞추면 "페이드가
+    // 걷히는 순간 = 재생이 시작되는 순간"이 되어 0번 프레임 정지화면이 잠깐 노출되는 구간이
+    // 없어진다(2026-09).
+    const val FADE_OUT_MS = 1000L
 
     private var viewRef: WeakReference<View>? = null
     private var animator: ValueAnimator? = null

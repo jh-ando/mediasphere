@@ -807,8 +807,10 @@ let playlistState = { playing: false, currentCueIndex: -1 };
 let playlistTimer = null;
 // 큐 전환이 너무 갑작스러워서, 지속시간이 끝나면 폰이 이 시간만큼 서서히 어두워진 뒤
 // 정지한다(PatternAnimator.fadeOutThenStop) - 다음 큐 시작을 그만큼 늦춰야 페이드아웃이
-// 다 끝난 뒤에 새 큐가 시작된다. Android의 같은 이름 상수와 반드시 같은 값을 써야 한다.
-const FADE_OUT_MS = 500;
+// 다 끝난 뒤에 새 큐가 시작된다. Android의 같은 이름 상수와 반드시 같은 값을 써야 한다
+// (PLAY_TRIGGER 전환 시 이 값이 START_DELAY_MS와 같아야 정지화면 노출 없이 페이드와
+// 재생 시작이 동시에 끝난다 - PatternAnimator.kt의 FADE_OUT_MS 주석 참고).
+const FADE_OUT_MS = 1000;
 
 function broadcastPlaylistState() {
   const message = JSON.stringify({ type: 'PATTERN_PLAYLIST_PROGRESS', ...playlistState });
