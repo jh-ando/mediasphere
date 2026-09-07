@@ -15,9 +15,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
@@ -81,9 +81,10 @@ private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 private const val MAX_DOWNLOAD_RETRIES = 4
 private const val DOWNLOAD_BASE_BACKOFF_MS = 2000L
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
-// 왼쪽 위 구석(kioskExitZone)을 이만큼 길게 눌러야 Lock Task Mode가 풀린다 - 실수로
-// 오래 만지는 정도로는 안 풀리게 충분히 길게 잡았다.
-private const val KIOSK_EXIT_HOLD_MS = 5000L
+// 왼쪽 위 구석(kioskExitZone)을 이 횟수만큼 연속으로 빠르게 탭해야 Lock Task Mode가
+// 풀린다 - 탭 사이 간격이 KIOSK_EXIT_TAP_WINDOW_MS를 넘으면 그동안 센 횟수는 리셋된다.
+private const val KIOSK_EXIT_TAP_COUNT = 5
+private const val KIOSK_EXIT_TAP_WINDOW_MS = 1500L
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
@@ -133,7 +134,6 @@ class MainActivity : ComponentActivity() {
     // 안 걸린 상태에서 부르면 예외를 던지므로, 해제 제스처(kioskExitZone)에서 이 값으로
     // 먼저 확인한다.
     private var kioskLocked = false
-    private var kioskExitJob: Job? = null
 
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
@@ -1135,27 +1135,26 @@ class MainActivity : ComponentActivity() {
         Log.d(TAG, "Lock Task Mode 시작 - 크래시 시 시스템이 자동 재실행")
     }
 
-    // 화면 왼쪽 위 구석(kioskExitZone, 투명해서 안 보임)을 KIOSK_EXIT_HOLD_MS만큼 계속
-    // 누르고 있으면 Lock Task Mode를 해제한다. 무선/USB 디버깅이 다 꺼져 있어도 현장에서
+    // 화면 왼쪽 위 구석(kioskExitZone, 투명해서 안 보임)을 KIOSK_EXIT_TAP_COUNT번 연속으로
+    // 빠르게 탭하면 Lock Task Mode를 해제한다. 무선/USB 디버깅이 다 꺼져 있어도 현장에서
     // 확인할 게 있을 때 앱을 빠져나갈 방법이 이것 말고는 전혀 없어서 추가했다(2026-09) -
-    // 그 전까지는 한 번 잠기면 ADB 없이는 절대 못 빠져나오는 상태였다.
+    // 그 전까지는 한 번 잠기면 ADB 없이는 절대 못 빠져나오는 상태였다. 처음엔 5초간 꾹
+    // 누르는 방식이었는데 불편하다는 피드백으로 연속 탭 방식으로 바꿨다 - 탭 사이 간격이
+    // KIOSK_EXIT_TAP_WINDOW_MS를 넘으면 그동안 센 횟수는 리셋된다.
+    private var kioskExitTapCount = 0
+    private var kioskExitLastTapAt = 0L
+
     private fun setupKioskExitGesture() {
         val exitZone = findViewById<View>(R.id.kioskExitZone)
-        exitZone.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    kioskExitJob?.cancel()
-                    kioskExitJob = lifecycleScope.launch {
-                        delay(KIOSK_EXIT_HOLD_MS)
-                        exitKioskLockTask()
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    kioskExitJob?.cancel()
-                    true
-                }
-                else -> false
+        exitZone.setOnClickListener {
+            val now = SystemClock.elapsedRealtime()
+            if (now - kioskExitLastTapAt > KIOSK_EXIT_TAP_WINDOW_MS) kioskExitTapCount = 0
+            kioskExitLastTapAt = now
+            kioskExitTapCount += 1
+
+            if (kioskExitTapCount >= KIOSK_EXIT_TAP_COUNT) {
+                kioskExitTapCount = 0
+                exitKioskLockTask()
             }
         }
     }
