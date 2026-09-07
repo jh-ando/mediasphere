@@ -49,4 +49,13 @@
         android:textSize="180sp"
         android:visibility="gone" />
 
+    <!-- 키오스크 잠금 해제 제스처 - 왼쪽 위 구석을 몇 초간 길게 누르면 Lock Task Mode가
+         풀린다(MainActivity.setupKioskExitGesture() 참고). 배경이 없어 화면엔 안 보이고,
+         맨 마지막 자식이라 항상 최상단이라 어떤 모드에서도 눌린다. -->
+    <View
+        android:id="@+id/kioskExitZone"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:layout_gravity="top|start" />
+
 </FrameLayout>

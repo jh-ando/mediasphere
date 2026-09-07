@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
@@ -80,6 +81,9 @@ private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 private const val MAX_DOWNLOAD_RETRIES = 4
 private const val DOWNLOAD_BASE_BACKOFF_MS = 2000L
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
+// 왼쪽 위 구석(kioskExitZone)을 이만큼 길게 눌러야 Lock Task Mode가 풀린다 - 실수로
+// 오래 만지는 정도로는 안 풀리게 충분히 길게 잡았다.
+private const val KIOSK_EXIT_HOLD_MS = 5000L
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
@@ -124,6 +128,12 @@ class MainActivity : ComponentActivity() {
     // 둘 다 유효할 이유가 없으므로(하나가 시작하면 이전 예약은 무조건 무효), 변수를
     // 하나로 합쳐서 이런 취소 누락 자체가 생길 수 없게 했다(2026-09).
     private var pendingPatternJob: Job? = null
+
+    // enableKioskLockTask()가 실제로 startLockTask()를 호출했는지 - stopLockTask()는 잠금이
+    // 안 걸린 상태에서 부르면 예외를 던지므로, 해제 제스처(kioskExitZone)에서 이 값으로
+    // 먼저 확인한다.
+    private var kioskLocked = false
+    private var kioskExitJob: Job? = null
 
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
@@ -224,6 +234,7 @@ class MainActivity : ComponentActivity() {
         idView = findViewById(R.id.idView)
         textScrollView = findViewById(R.id.textScrollView)
         PatternAnimator.attach(patternView)
+        setupKioskExitGesture()
         colorOverlayAlpha = readColorOverlayAlpha()
 
         // 서버-폰 시간 오프셋 측정 - 최초 1회 실행 후 1분마다 재동기화 (폰 시계 드리프트 누적 방지)
@@ -1120,6 +1131,43 @@ class MainActivity : ComponentActivity() {
         val admin = ComponentName(this, DeviceAdminReceiver::class.java)
         dpm.setLockTaskPackages(admin, arrayOf(packageName))
         startLockTask()
+        kioskLocked = true
         Log.d(TAG, "Lock Task Mode 시작 - 크래시 시 시스템이 자동 재실행")
+    }
+
+    // 화면 왼쪽 위 구석(kioskExitZone, 투명해서 안 보임)을 KIOSK_EXIT_HOLD_MS만큼 계속
+    // 누르고 있으면 Lock Task Mode를 해제한다. 무선/USB 디버깅이 다 꺼져 있어도 현장에서
+    // 확인할 게 있을 때 앱을 빠져나갈 방법이 이것 말고는 전혀 없어서 추가했다(2026-09) -
+    // 그 전까지는 한 번 잠기면 ADB 없이는 절대 못 빠져나오는 상태였다.
+    private fun setupKioskExitGesture() {
+        val exitZone = findViewById<View>(R.id.kioskExitZone)
+        exitZone.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    kioskExitJob?.cancel()
+                    kioskExitJob = lifecycleScope.launch {
+                        delay(KIOSK_EXIT_HOLD_MS)
+                        exitKioskLockTask()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    kioskExitJob?.cancel()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun exitKioskLockTask() {
+        if (!kioskLocked) return
+        try {
+            stopLockTask()
+            kioskLocked = false
+            Log.d(TAG, "잠금 해제 제스처 감지 - Lock Task Mode 해제")
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Lock Task Mode 해제 실패", e)
+        }
     }
 }
