@@ -71,9 +71,18 @@ object PatternAnimator {
         valueAnimator.addUpdateListener { anim ->
             view.alpha = anim.animatedValue as Float
         }
+        // REVERSE 모드는 한 사이클(꺼짐→켜짐→꺼짐)마다 onAnimationRepeat이 두 번(각 방향
+        // 전환마다) 불린다 - 홀수 번째(0->1 완료, 막 켜진 시점)에 색을 바꾸면 화면이 켜진
+        // 채로 색이 툭 튀어 보이므로, 짝수 번째(1->0 완료, 막 꺼진 시점)에만 바꾼다.
+        // view.alpha를 직접 읽어서 "지금 꺼졌는지" 판단했던 이전 방식은 애니메이터가 그
+        // 프레임의 값을 실제로 반영하기 전에 리스너가 불리는 경우가 있어 색이 거의 안
+        // 바뀌는 문제가 있었다 - 횟수를 직접 세는 방식으로 바꿔 타이밍에 안 좌우되게 했다
+        // (실기기에서 색이 처음 값으로 고정되던 문제 수정, 2026-09).
+        var repeatCount = 0
         valueAnimator.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationRepeat(animation: Animator) {
-                if (view.alpha == 0f) view.setBackgroundColor(colorProvider())
+                repeatCount += 1
+                if (repeatCount % 2 == 0) view.setBackgroundColor(colorProvider())
             }
         })
         animator = valueAnimator
