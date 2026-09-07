@@ -650,14 +650,22 @@ function renderPlaylistCues() {
 
 // 재생 중엔 모든 편집 요소(입력/추가/삭제/저장/이동)를 막는다 - 서버도 같은 규칙을
 // /api/pattern/playlist(저장)에서 강제하지만, 여기서도 막아야 헷갈리지 않는다.
-// 재생 중이 아닐 땐 일부러 강제로 활성화하지 않는다 - ↑/↓ 이동 버튼은 맨 위/아래 큐에서
-// createCueRow()가 이미 disabled를 걸어두는데, 여기서 무조건 false로 덮어쓰면 그 경계
-// 처리가 매번 renderPlaylistCues() 직후 풀려버린다.
+// renderPlaylistCues() 직후뿐 아니라 재생→정지 전환 시(applyPlaylistProgress)에도
+// DOM을 다시 그리지 않고 이 함수만 불리므로, 재생 중 꺼뒀던 요소들을 여기서 직접
+// 다시 켜줘야 한다 - 예전엔 "재생 중이 아니면 아무것도 안 건드림"으로 해뒀었는데,
+// 그러면 정지 후에도 편집이 계속 막힌 채로 남는 버그가 있었다(재생→정지 후 수정 불가,
+// 2026-09). ↑/↓ 이동 버튼은 무조건 활성화하지 않고 맨 위/아래 큐 기준으로 다시 계산한다.
 function updatePlaylistEditability() {
   const disabled = playlistPlaying;
-  if (disabled) {
-    playlistCuesEl.querySelectorAll('input, select, button').forEach((el) => { el.disabled = true; });
-  }
+  const rows = [...playlistCuesEl.querySelectorAll('.playlist-cue-row')];
+  rows.forEach((row, index) => {
+    row.querySelectorAll('input, select, button').forEach((el) => { el.disabled = disabled; });
+    if (!disabled) {
+      const buttons = row.querySelectorAll('button');
+      buttons[0].disabled = index === 0; // 위로 이동
+      buttons[1].disabled = index === rows.length - 1; // 아래로 이동
+    }
+  });
   btnPlaylistAddCue.disabled = disabled;
   btnPlaylistSave.disabled = disabled;
   btnPlaylistPlay.disabled = disabled || playlistCues.length === 0;
