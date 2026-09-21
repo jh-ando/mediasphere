@@ -380,6 +380,7 @@ function handleFileReady(deviceId, payload) {
     reportedAt: Date.now(),
   };
   console.log(`[MQTT] wall/ready/${deviceId} 수신 - ${ok ? 'ok' : 'mismatch'} (checksum=${msg.checksum})`);
+  settleDeployDevice(deployRun, deviceId, ok ? 'ok' : 'mismatch');
 }
 
 // 폰이 wall/error/{deviceId}로 보고한 다운로드/검증 실패를 기록한다 (원인 파싱 실패해도 mismatch로 취급).
@@ -398,6 +399,7 @@ function handleFileError(deviceId, payload) {
     reportedAt: Date.now(),
   };
   console.log(`[MQTT] wall/error/${deviceId} 수신 - ${msg.reason || '(사유 없음)'} ${msg.detail || ''}`);
+  settleDeployDevice(deployRun, deviceId, 'failed');
 }
 
 // 대시보드에 노출할 3단계 상태. 응답 없음(무응답/heartbeat 끊김)이 체크섬 불일치보다 먼저 판정된다 -
@@ -411,52 +413,188 @@ function computeFileStatus(deviceId) {
   return reported.status;
 }
 
-// 폰 config를 한꺼번에 발행하면 439대가 거의 동시에 자기 영상을 /clips에서 다운로드하기
-// 시작해 폐쇄망 Wi-Fi/서버 대역폭이 몰리고, 그 중 신호가 약하거나 타이밍이 나빴던 몇 대가
-// 다운로드 타임아웃(안드로이드 DOWNLOAD_TIMEOUT_MS)으로 실패하는 문제가 실기기에서 확인됐다
-// (영상교체 배포 시 몇 대가 랜덤하게 파일 동기화에 실패, 2026-09). 발행 자체를 이 간격만큼
-// 순차적으로 늦춰서 다운로드 시작 시점을 시간축에 분산시킨다. 150ms로도 대부분 해결됐지만
-// 여전히 2대 정도 남아있어서, 실기기에서 문제없이 검증된 OTA 롤링 배포 간격(stepDelayMs=500,
-// /api/app-deploy)과 같은 값으로 올렸다 - 안드로이드 쪽에도 이번에 재시도(지수 백오프)를
-// 추가해서, 이 간격을 늘려도 못 잡는 극소수 실패는 그쪽에서 복구한다.
-const DEVICE_PUBLISH_STAGGER_MS = 500;
+// ── 영상 배포 (동시 다운로드 대수 제한) ─────────────────
+// 폰은 wall/device/{id} config를 받자마자 자기 영상을 /clips에서 다운로드한다. 예전엔 439대분
+// config를 시작 시점만 500ms씩 벌려 발행했는데, 파일이 작을 땐 통했어도 40~50MB 영상은
+// 전송에 수십 초가 걸려서 시작 간격과 무관하게 수십~수백 대의 다운로드가 겹쳤고, 폐쇄망
+// Wi-Fi가 포화돼 다운로드 실패와 heartbeat 유실(대시보드 무응답)이 났다(2026-09).
+// 그래서 "동시에 다운로드 중인 폰 수"를 직접 제한한다: 최대 DEPLOY_MAX_CONCURRENT대까지만
+// config를 발행해 두고, 그 폰이 wall/ready 또는 wall/error로 결과를 보고하면(또는
+// DEPLOY_DEVICE_TIMEOUT_MS가 지나면) 그 자리에 다음 폰의 config를 발행한다.
+const DEPLOY_MAX_CONCURRENT = 20;
+// 폰 한 대가 이 시간 안에 결과를 못 보내면 슬롯만 비워서 배포가 막히지 않게 한다(그 폰의
+// 다운로드 자체는 계속 진행될 수 있다). 폰 쪽 재시도 최악값(15초 타임아웃 x 4회 + 백오프)
+// 보다 넉넉하게 잡았다.
+const DEPLOY_DEVICE_TIMEOUT_MS = 120000;
+// 슬롯에 새 폰을 채우는 최소 간격 - 처음 20대가 한꺼번에 몰리지 않고 점진적으로 올라가게 한다.
+const DEPLOY_START_SPACING_MS = 500;
+// 이미 파일이 맞는 폰/오프라인 폰은 다운로드로 대역폭을 안 쓰므로(오프라인 폰은 retain으로
+// 접속 시 받는다) 기다리지 않고 짧은 간격으로 바로 발행한다.
+const DEPLOY_LIGHT_SPACING_MS = 20;
+// 전부 발행한 뒤 실패했던 폰이 한산해진 네트워크에서 다시 시도하도록 CHECK_UPDATE를 한 번 더 보낸다.
+const DEPLOY_CHECK_UPDATE_DELAY_MS = 10000;
 
-// manifest의 폰별 config.json을 wall/device/{deviceId}에 retain 발행한다.
+// 지금 진행 중인 배포 - { queue, inFlight(deviceId -> 타임아웃 타이머), timers, counts, ... }.
+// 새 배포가 시작되면 이전 것은 취소되고 이 값이 교체된다. CHECK_UPDATE까지 보내고 나면 null.
+let deployRun = null;
+
+function deployTimer(run, fn, ms) {
+  const timer = setTimeout(() => {
+    run.timers.delete(timer);
+    fn();
+  }, ms);
+  run.timers.add(timer);
+  return timer;
+}
+
+function cancelDeployRun() {
+  if (!deployRun) return;
+  deployRun.timers.forEach(clearTimeout);
+  deployRun.timers.clear();
+  deployRun.inFlight.clear();
+  deployRun = null;
+}
+
+// manifest 항목 하나의 config를 wall/device/{deviceId}에 retain 발행한다.
 // wall/state/color와 같은 패턴 - 늦게 접속/재부팅한 폰도 자동으로 최신 config를 받는다.
-// 위 이유로 발행은 폰마다 DEVICE_PUBLISH_STAGGER_MS씩 늦춰서 순차적으로 나가고, 마지막
-// 발행이 끝난 뒤 다운로드가 마무리될 여유(10초)를 두고 CHECK_UPDATE를 한 번 더 브로드캐스트
-// 한다 - 혼잡 때문에 처음에 실패했던 폰도 이때는 네트워크가 한산해져 재시도가 성공하기 쉽다.
+function publishDeviceConfig(device) {
+  const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
+  if (!fs.existsSync(configPath)) {
+    console.error(`[MQTT] config 파일 없음, 발행 생략 - deviceId=${device.deviceId}`);
+    return false;
+  }
+  const payload = fs.readFileSync(configPath, 'utf-8');
+  const topic = `${MQTT_DEVICE_TOPIC_PREFIX}${device.deviceId}`;
+  mqttClient.publish(topic, payload, { retain: true, qos: 1 }, (err) => {
+    if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
+  });
+  return true;
+}
+
+// 슬롯이 비어 있고 대기열이 남았으면 다음 폰 하나를 발행한다. 발행 후엔
+// DEPLOY_START_SPACING_MS 뒤에 스스로 다시 불러서 슬롯이 찰 때까지 이어간다.
+function pumpDeployRun(run) {
+  if (run !== deployRun || run.finished || run.pumpScheduled) return;
+
+  if (run.queue.length === 0) {
+    if (run.inFlight.size === 0) finishDeployRun(run);
+    return;
+  }
+  if (run.inFlight.size >= DEPLOY_MAX_CONCURRENT) return;
+
+  const device = run.queue.shift();
+  const id = String(device.deviceId);
+  if (publishDeviceConfig(device)) {
+    const timer = deployTimer(run, () => settleDeployDevice(run, id, 'timeout'), DEPLOY_DEVICE_TIMEOUT_MS);
+    run.inFlight.set(id, timer);
+  } else {
+    run.counts.skipped += 1;
+  }
+
+  run.pumpScheduled = true;
+  deployTimer(run, () => {
+    run.pumpScheduled = false;
+    pumpDeployRun(run);
+  }, DEPLOY_START_SPACING_MS);
+}
+
+// 결과가 확정된 폰 수(config 없어서 건너뛴 폰 포함) - 진행률이 total에 도달할 수 있게 skipped도 센다.
+function deploySettledCount(run) {
+  const c = run.counts;
+  return c.ok + c.mismatch + c.failed + c.timeout + c.skipped;
+}
+
+// 대시보드 STATUS_UPDATE에 실을 배포 진행 스냅샷. 진행 중인 배포가 없으면 null.
+function buildDeployProgress() {
+  if (!deployRun) return null;
+  const run = deployRun;
+  return {
+    total: run.total,
+    settled: deploySettledCount(run),
+    inFlight: run.inFlight.size,
+    queued: run.queue.length,
+    counts: run.counts,
+    finished: run.finished,
+  };
+}
+
+// 진행 중이던 폰 하나의 결과가 나왔을 때(ready/error 보고 또는 시간초과) 슬롯을 비우고
+// 다음 폰을 채운다. result: 'ok' | 'mismatch' | 'failed' | 'timeout'
+function settleDeployDevice(run, deviceId, result) {
+  if (!run || run !== deployRun) return;
+  const timer = run.inFlight.get(deviceId);
+  if (timer === undefined) return; // 이 배포가 기다리던 폰이 아님(이미 끝났거나 대상 아님)
+
+  clearTimeout(timer);
+  run.timers.delete(timer);
+  run.inFlight.delete(deviceId);
+  run.counts[result] += 1;
+
+  console.log(
+    `[MQTT] 배포 진행 - device ${deviceId} ${result} (완료 ${deploySettledCount(run)}/${run.total}, `
+    + `진행 중 ${run.inFlight.size}, 대기 ${run.queue.length})`,
+  );
+  pumpDeployRun(run);
+}
+
+function finishDeployRun(run) {
+  run.finished = true;
+  const c = run.counts;
+  console.log(
+    `[MQTT] 배포 발행 완료 - 정상 ${c.ok} / 불일치 ${c.mismatch} / 실패 ${c.failed} / `
+    + `시간초과 ${c.timeout} / config없음 ${c.skipped} (대상 ${run.total}대)`,
+  );
+  deployTimer(run, () => {
+    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
+    console.log('[MQTT] 배포 완료 - CHECK_UPDATE 재검증 브로드캐스트');
+    if (deployRun === run) deployRun = null;
+  }, DEPLOY_CHECK_UPDATE_DELAY_MS);
+}
+
+// manifest의 폰별 config.json을 발행한다. 다운로드가 필요한 폰(온라인이면서 아직 새 파일이
+// 확인 안 된 폰)만 동시 DEPLOY_MAX_CONCURRENT대씩 순차로 내보내고, 나머지는 바로 발행한다.
+// 반환값은 대상 폰 수(manifest 전체) - 실제 발행은 백그라운드에서 진행된다.
 function publishDeviceConfigs() {
   if (!manifest) {
     console.error('[MQTT] manifest 없음 - wall/device 발행 생략');
     return 0;
   }
 
-  const targets = manifest.devices.filter((device) => {
-    const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
-    const exists = fs.existsSync(configPath);
-    if (!exists) console.error(`[MQTT] config 파일 없음, 발행 생략 - deviceId=${device.deviceId}`);
-    return exists;
+  if (deployRun) {
+    console.log('[MQTT] 진행 중이던 배포를 취소하고 새 배포로 교체');
+    cancelDeployRun();
+  }
+
+  const queue = [];
+  const immediate = [];
+  for (const device of manifest.devices) {
+    const id = String(device.deviceId);
+    if (!isDeviceOnline(id) || computeFileStatus(id) === 'ok') immediate.push(device);
+    else queue.push(device);
+  }
+
+  const run = {
+    queue,
+    inFlight: new Map(),
+    timers: new Set(),
+    pumpScheduled: false,
+    finished: false,
+    total: queue.length,
+    counts: { ok: 0, mismatch: 0, failed: 0, timeout: 0, skipped: 0 },
+  };
+  deployRun = run;
+
+  console.log(
+    `[MQTT] 배포 시작 - 순차 ${queue.length}대(동시 최대 ${DEPLOY_MAX_CONCURRENT}) / `
+    + `즉시 ${immediate.length}대(오프라인 또는 이미 정상)`,
+  );
+
+  immediate.forEach((device, index) => {
+    deployTimer(run, () => publishDeviceConfig(device), index * DEPLOY_LIGHT_SPACING_MS);
   });
+  pumpDeployRun(run);
 
-  targets.forEach((device, index) => {
-    setTimeout(() => {
-      const configPath = path.join(CONFIGS_DIR, `${device.deviceId}.json`);
-      const payload = fs.readFileSync(configPath, 'utf-8');
-      const topic = `${MQTT_DEVICE_TOPIC_PREFIX}${device.deviceId}`;
-      mqttClient.publish(topic, payload, { retain: true, qos: 1 }, (err) => {
-        if (err) console.error(`[MQTT] ${topic} 발행 오류:`, err.message);
-      });
-    }, index * DEVICE_PUBLISH_STAGGER_MS);
-  });
-
-  const lastPublishDelayMs = Math.max(0, targets.length - 1) * DEVICE_PUBLISH_STAGGER_MS;
-  setTimeout(() => {
-    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
-    console.log('[MQTT] 순차 발행 완료 - CHECK_UPDATE 재검증 브로드캐스트');
-  }, lastPublishDelayMs + 10000);
-
-  return targets.length;
+  return manifest.devices.length;
 }
 
 // ── APK 버전 정보 (OTA) ──────────────────────────────
@@ -1414,7 +1552,7 @@ app.post('/api/distribute/publish', (req, res) => {
 
   const published = publishDeviceConfigs();
 
-  console.log(`[HTTP] 배포 재발행 - wall/device ${published}건 순차 발행 시작 (다운로드 몰림 방지)`);
+  console.log(`[HTTP] 배포 재발행 - 대상 ${published}대, 동시 다운로드 ${DEPLOY_MAX_CONCURRENT}대 제한으로 순차 발행 시작`);
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
 });
 
@@ -1577,7 +1715,10 @@ async function processVideoReplace(mode, uploadedPath) {
     loadManifest();
     if (!manifest) throw new Error('deploy.py는 끝났는데 manifest.json을 못 찾았습니다.');
     const published = publishDeviceConfigs();
-    pushVideoReplaceLog(`발행 시작 - wall/device ${published}건 순차 발행 중 (다운로드 몰림 방지)`);
+    pushVideoReplaceLog(
+      `발행 시작 - 대상 ${published}대, 동시 다운로드 ${DEPLOY_MAX_CONCURRENT}대씩 순차 배포 중 `
+      + '(전체 완료까지 시간이 걸릴 수 있음 - 서버 로그에서 진행 상황 확인)',
+    );
 
     // 새 영상으로 바뀌었으니 캐시해둔 길이(있었다면)는 버린다 - 다음에 필요할 때
     // (PLAY_TRIGGER 1회 재생 등) 새 영상으로 다시 잰다.
@@ -1815,6 +1956,7 @@ function buildStatusPayload() {
     versions,
     battery,
     latestVersionCode: appVersion ? appVersion.versionCode : null,
+    deploy: buildDeployProgress(),
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     idleMode: state.idleMode,

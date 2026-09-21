@@ -4,6 +4,9 @@ const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "낮음"으로 
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
 const batteryStatusCountEl = document.getElementById('battery-status-count');
+const deployProgressEl = document.getElementById('deploy-progress');
+const deployProgressTextEl = document.getElementById('deploy-progress-text');
+const deployProgressBarEl = document.getElementById('deploy-progress-bar');
 const otaStatusCountEl = document.getElementById('ota-status-count');
 const versionStatusCountEl = document.getElementById('version-status-count');
 const btnVersionToggle = document.getElementById('btn-version-toggle');
@@ -172,6 +175,20 @@ function applyStatusUpdate(data) {
 
   fileStatusCountEl.textContent =
     `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
+
+  // 영상 배포는 동시 다운로드 수를 제한해 순차로 나가서 몇 분~수십 분 걸린다("영상 교체"
+  // 패널은 발행 시작 시점에 done으로 넘어가므로) - 진행 중일 때만 진행률을 보여준다.
+  const deploy = data.deploy;
+  deployProgressEl.hidden = !deploy;
+  if (deploy) {
+    const c = deploy.counts;
+    deployProgressTextEl.textContent = deploy.finished
+      ? `배포 완료 - 재검증 중 (실패 ${c.failed + c.mismatch} / 시간초과 ${c.timeout})`
+      : `배포: ${deploy.settled}/${deploy.total} 완료 · 다운로드 중 ${deploy.inFlight} · 대기 ${deploy.queued}`
+        + ` (실패 ${c.failed + c.mismatch} / 시간초과 ${c.timeout})`;
+    deployProgressBarEl.max = Math.max(deploy.total, 1);
+    deployProgressBarEl.value = deploy.settled;
+  }
 
   batteryStatusCountEl.textContent =
     `배터리: 정상 ${batteryCounts.ok} / 낮음 ${batteryCounts.low} `
