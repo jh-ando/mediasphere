@@ -68,6 +68,10 @@ const FILE_REASON_LABEL = {
   RENAME_FAILED: '파일 교체 실패',
 };
 
+const REBOOT_ERROR_LABEL = {
+  NOT_DEVICE_OWNER: 'Device Owner 아님(재등록 필요)',
+};
+
 const vrFileEl = document.getElementById('vr-file');
 const btnVrStart = document.getElementById('btn-vr-start');
 const btnVrCancel = document.getElementById('btn-vr-cancel');
@@ -133,6 +137,8 @@ function applyStatusUpdate(data) {
   const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
   const playerError = data.playerError || {};
   let playerErrorCount = 0;
+  const rebootError = data.rebootError || {};
+  let rebootErrorCount = 0;
   const otaStatus = data.otaStatus || {};
   const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
   const versions = data.versions || {};
@@ -179,6 +185,8 @@ function applyStatusUpdate(data) {
     batteryCounts[batteryKey] += 1;
     const pError = playerError[id];
     if (pError) playerErrorCount += 1;
+    const rError = rebootError[id];
+    if (rError) rebootErrorCount += 1;
 
     if (cell) {
       cell.classList.toggle('battery-not-charging', batteryKey === 'notCharging');
@@ -192,6 +200,7 @@ function applyStatusUpdate(data) {
         tips.push(`파일 불일치 - ${FILE_REASON_LABEL[reason] || reason || '사유 없음'}`);
       }
       if (pError) tips.push(`재생 오류 - ${pError}`);
+      if (rError) tips.push(`재부팅 요청 실패 - ${REBOOT_ERROR_LABEL[rError] || rError}`);
       cell.title = tips.join('\n');
     }
 
@@ -202,11 +211,13 @@ function applyStatusUpdate(data) {
   fileStatusCountEl.textContent =
     `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
 
+  playerErrorCountEl.textContent = rebootErrorCount > 0
+    ? `재생오류 ${playerErrorCount} · 재부팅 실패 ${rebootErrorCount}`
+    : `재생오류 ${playerErrorCount}`;
+  playerErrorCountEl.classList.toggle('has-error', playerErrorCount + rebootErrorCount > 0);
+
   // 영상 배포는 동시 다운로드 수를 제한해 순차로 나가서 몇 분~수십 분 걸린다("영상 교체"
   // 패널은 발행 시작 시점에 done으로 넘어가므로) - 진행 중일 때만 진행률을 보여준다.
-  playerErrorCountEl.textContent = `재생오류 ${playerErrorCount}`;
-  playerErrorCountEl.classList.toggle('has-error', playerErrorCount > 0);
-
   const deploy = data.deploy;
   deployProgressEl.hidden = !deploy;
   // 서버도 배포 중엔 /api/play를 거부한다(업체 PLAY_TRIGGER 포함) - 버튼은 그 상태를 보여주는 것뿐.
@@ -481,16 +492,23 @@ function parseDeviceIds(text) {
   return ids;
 }
 
-btnRestartSelected.addEventListener('click', () => {
+// 입력칸의 deviceId 목록을 읽는다. 비었거나 형식이 틀리면 안내를 띄우고 null을 돌려준다.
+function readSelectedDeviceIds(emptyMessage) {
   const ids = parseDeviceIds(restartDeviceIdsEl.value);
   if (ids === undefined) {
     window.alert('deviceId는 쉼표로 구분된 양의 정수로 입력하세요 (예: 1,2,3)');
-    return;
+    return null;
   }
   if (ids === null) {
-    window.alert('재시작할 deviceId를 입력하세요 (전체는 "전체 재시작" 버튼 사용)');
-    return;
+    window.alert(emptyMessage);
+    return null;
   }
+  return ids;
+}
+
+btnRestartSelected.addEventListener('click', () => {
+  const ids = readSelectedDeviceIds('재시작할 deviceId를 입력하세요 (전체는 "전체 재시작" 버튼 사용)');
+  if (!ids) return;
   if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재시작할까요?`)) return;
 
   postJson('/api/restart-app', { targetDeviceIds: ids })
@@ -506,15 +524,8 @@ btnRestartAll.addEventListener('click', () => {
 
 // 재부팅은 전체 버튼이 없다 - 서버도 targetDeviceIds를 필수로 받는다.
 btnRebootSelected.addEventListener('click', () => {
-  const ids = parseDeviceIds(restartDeviceIdsEl.value);
-  if (ids === undefined) {
-    window.alert('deviceId는 쉼표로 구분된 양의 정수로 입력하세요 (예: 1,2,3)');
-    return;
-  }
-  if (ids === null) {
-    window.alert('재부팅할 deviceId를 입력하세요');
-    return;
-  }
+  const ids = readSelectedDeviceIds('재부팅할 deviceId를 입력하세요');
+  if (!ids) return;
   if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재부팅할까요? 폰이 다시 켜질 때까지 1~2분 걸립니다.`)) return;
 
   postJson('/api/reboot-device', { targetDeviceIds: ids })

@@ -265,6 +265,9 @@ const deviceBattery = {};
 // 항목 자체가 없다. 폰이 재생을 회복하면 heartbeat에서 빠지므로 다음 heartbeat에 같이 지워진다.
 // 디코더가 오류 없이 깨진 화면만 내보내는 경우는 폰도 모르므로 여기 안 잡힌다.
 const devicePlayerError = {};
+// deviceId(문자열) -> heartbeat에 실려온 원격 재부팅 실패 사유(NOT_DEVICE_OWNER 등). 재부팅
+// 요청을 보냈는데 폰이 실행하지 못한 경우를 대시보드에서 알 수 있게 한다.
+const deviceRebootError = {};
 
 function isDeviceOnline(deviceId) {
   const lastSeen = deviceLastSeen[deviceId];
@@ -773,6 +776,11 @@ mqttClient.on('message', (topic, payload) => {
         devicePlayerError[statusMatch[1]] = msg.playerError;
       } else {
         delete devicePlayerError[statusMatch[1]];
+      }
+      if (typeof msg.rebootError === 'string') {
+        deviceRebootError[statusMatch[1]] = msg.rebootError;
+      } else {
+        delete deviceRebootError[statusMatch[1]];
       }
     } catch (err) {
       // 구버전 앱은 versionCode/배터리 필드를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
@@ -2016,6 +2024,7 @@ function buildStatusPayload() {
   // CHECKSUM_MISMATCH 등), wall/ready인데 체크섬이 다르면 OLD_FILE(옛 영상을 들고 있음).
   const fileReason = {};
   const playerError = {};
+  const rebootError = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
@@ -2030,6 +2039,7 @@ function buildStatusPayload() {
     if (typeof deviceVersion[id] === 'number') versions[id] = deviceVersion[id];
     if (deviceBattery[id]) battery[id] = deviceBattery[id];
     if (status === 'online' && devicePlayerError[id]) playerError[id] = devicePlayerError[id];
+    if (status === 'online' && deviceRebootError[id]) rebootError[id] = deviceRebootError[id];
   }
 
   const appVersion = readAppVersion();
@@ -2042,6 +2052,7 @@ function buildStatusPayload() {
     fileStatus,
     fileReason,
     playerError,
+    rebootError,
     otaStatus,
     versions,
     battery,

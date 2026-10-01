@@ -139,8 +139,11 @@ MediaSphere/
 - wall/device/{id} : 서버 → 개별 (retain, config.json 배포)
 - wall/pattern/{id}: 서버 → 개별 (non-retain, 텍스트 패턴 셀 색상/애니메이션)
 - wall/status/{id} : 폰 → 서버 (heartbeat, 5초마다)
-- wall/ready/{id}  : 폰 → 서버 (다운로드 완료)
-- wall/error/{id}  : 폰 → 서버 (오류)
+                     versionCode/batteryPct/charging 외에, 문제가 있을 때만
+                     playerError(ExoPlayer errorCodeName), rebootError(NOT_DEVICE_OWNER 등)
+- wall/ready/{id}  : 폰 → 서버 (다운로드 완료) {"checksum":"sha256:..."}
+- wall/error/{id}  : 폰 → 서버 (영상 파일 오류) {"reason":...}
+                     reason: DOWNLOAD_FAILED | CHECKSUM_MISMATCH | RENAME_FAILED
 - wall/state/color : 서버 → 전체 (retain, 현재 컬러 상태)
 
 ## MQTT 명령 타입 (wall/control)
@@ -149,7 +152,15 @@ MediaSphere/
 - PLAY        : {"type":"PLAY","startAt":밀리초}
 - STOP        : {"type":"STOP","elapsedMs":밀리초}
 - LOAD        : {"type":"LOAD","filename":"xxx.mp4"}
-- CHECK_UPDATE: {"type":"CHECK_UPDATE"}
+- CHECK_UPDATE: {"type":"CHECK_UPDATE","targetDeviceIds":[...]}
+                targetDeviceIds 없으면 전체. 서버는 배포 완료 후 아직 새 파일이
+                확인 안 된 온라인 폰에만 보낸다.
+
+### 기기 관리 (non-retain - retain하면 재접속 폰이 또 실행하므로 금지)
+- RESTART_APP  : {"type":"RESTART_APP","targetDeviceIds":[...]} (없으면 전체) 앱 프로세스 재시작
+- REBOOT_DEVICE: {"type":"REBOOT_DEVICE","targetDeviceIds":[...]} (필수) 기기 재부팅
+                 Device Owner 권한 필요. 디코더(시스템 코덱 서비스)가 고장 나
+                 앱 재시작으로 안 풀리는 화면 깨짐 복구용. 실패 시 heartbeat rebootError
 
 ### 모드 전환
 - MODE_VIDEO  : {"type":"MODE_VIDEO"}
@@ -200,8 +211,12 @@ MediaSphere/
                  진행 중인 페이드 취소 (마지막 상태 유지, PATTERN_STOP과 동일 관례)
 
 ## HTTP API 엔드포인트
-- POST /api/play
+- POST /api/play           (영상 배포 진행 중이면 409 거부 - 업체 PLAY_TRIGGER도 ERROR로 거부)
 - POST /api/stop
+- POST /api/distribute/publish  manifest 재로드 후 폰별 config 배포(동시 다운로드 20대 제한,
+                 시작 시 재생 중인 영상 정지, 완료까지 재생 차단)
+- POST /api/restart-app    {"targetDeviceIds":[...]} (생략 시 전체)
+- POST /api/reboot-device  {"targetDeviceIds":[...]} (필수, 양의 정수 1개 이상)
 - POST /api/mode           {"mode":"video"|"pattern"}
 - POST /api/pattern/config {"color":"#FFFFFF","interval":500,"duration":3000}
 - POST /api/pattern/start

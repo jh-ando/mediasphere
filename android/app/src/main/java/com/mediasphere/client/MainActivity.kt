@@ -46,7 +46,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -86,12 +88,13 @@ private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 // downloadWithRetry)와 동일한 지수 백오프 재시도를 추가한다(실기기에서 검증된 값, 2026-09).
 private const val MAX_DOWNLOAD_RETRIES = 4
 private const val DOWNLOAD_BASE_BACKOFF_MS = 2000L
-// 받은 파일의 체크섬이 기대값과 다를 때 다시 받는 최대 횟수(MAX_DOWNLOAD_RETRIES 안에서).
-private const val MAX_CHECKSUM_MISMATCH_RETRIES = 2
+// 받은 파일의 체크섬 불일치가 이 횟수만큼 나오면 더 받지 않고 포기한다(= 다시 받기는 1번).
+// 서버 파일 자체가 manifest와 다르면 몇 번을 받아도 같으므로 439대 반복 다운로드를 막는다.
+private const val MAX_CHECKSUM_MISMATCH_ATTEMPTS = 2
 // 재생 중인 파일을 교체하기 전 player.stop()이 내부 재생 스레드에서 처리될 때까지 기다리는 시간
 private const val PLAYER_STOP_SETTLE_MS = 200L
-// 재생 오류 시 자동 복구(파일 재검증+재로드)를 시도하는 최소 간격 - 디코더가 고장 난 경우엔
-// 재로드로 안 풀리므로, 디코더를 계속 다시 만들며 반복 시도하지 않게 한다.
+// 재생 오류가 계속되는 동안 자동 복구(파일 재검증+재로드)를 다시 시도하는 간격 - 디코더가
+// 고장 난 경우엔 재로드로 안 풀리므로, 디코더를 짧은 간격으로 계속 다시 만들지 않게 한다.
 private const val PLAYER_ERROR_RECOVERY_INTERVAL_MS = 60_000L
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
 // 왼쪽 위 구석(kioskExitZone)을 이 횟수만큼 연속으로 빠르게 탭해야 Lock Task Mode가
@@ -104,6 +107,9 @@ enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
 
 // 영상 동기화 대상 - 같은 대상의 동기화가 이미 진행 중이면 새 요청을 무시하는 기준.
 private data class SyncTarget(val videoPath: String, val currentVideo: String, val checksum: String?)
+
+// 체크섬을 확인했던 시점의 파일 상태 - 경로/크기/수정시각이 같으면 내용도 같다고 본다.
+private data class VerifiedFile(val path: String, val length: Long, val lastModified: Long, val checksum: String)
 
 private sealed class DownloadResult {
     class Success(val tmpFile: File, val checksum: String) : DownloadResult()
@@ -184,8 +190,16 @@ class MainActivity : ComponentActivity() {
     // null이면 앱 시작 때 config.json 기준으로 로드해서 아직 체크섬을 확인 안 한 상태.
     private var loadedChecksum: String? = null
 
-    // 재생 오류 자동 복구를 마지막으로 시도한 시각(elapsedRealtime) - PLAYER_ERROR_RECOVERY_INTERVAL_MS 제한용
+    // 재생 오류 자동 복구를 마지막으로 시도한 시각(elapsedRealtime)과 예약된 다음 시도 -
+    // 오류가 이어지는 동안 PLAYER_ERROR_RECOVERY_INTERVAL_MS마다 한 번씩 재시도한다.
     private var lastPlayerErrorRecoveryAt: Long? = null
+    private var playerErrorRecoveryJob: Job? = null
+
+    // 마지막으로 체크섬을 확인한 로컬 파일 - 크기/수정시각이 그대로면 40~50MB를 다시 해시하지
+    // 않고 이 값을 쓴다(CHECK_UPDATE, 재생 오류 복구, 재연결 때마다 전체 해시하던 부담 제거).
+    // IO 스레드에서 읽고 쓰므로 @Volatile.
+    @Volatile
+    private var verifiedFile: VerifiedFile? = null
 
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
@@ -293,8 +307,9 @@ class MainActivity : ComponentActivity() {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState != Player.STATE_READY) return
 
-                // 재생이 정상으로 돌아왔으면 서버에 보고하던 재생 오류를 지운다
+                // 재생이 정상으로 돌아왔으면 서버에 보고하던 재생 오류를 지우고 예약된 재시도도 취소한다
                 if (::mqttManager.isInitialized) mqttManager.playerError = null
+                playerErrorRecoveryJob?.cancel()
 
                 val startAt = pendingStartAt ?: return
                 val duration = player.duration
@@ -307,20 +322,14 @@ class MainActivity : ComponentActivity() {
             }
 
             // 재생 오류(파일을 못 읽음, 디코더 초기화 실패 등) - heartbeat로 서버에 보고하고
-            // 파일 재검증+재로드를 한 번 시도한다. 디코더 자체가 고장 났으면 재로드로 안 풀리므로
-            // 자동 재시도는 PLAYER_ERROR_RECOVERY_INTERVAL_MS에 한 번만 하고, 계속 실패하면
+            // 파일 재검증+재로드를 시도한다. 디코더 자체가 고장 났으면 재로드로 안 풀리므로
+            // 오류가 이어지는 동안 PLAYER_ERROR_RECOVERY_INTERVAL_MS마다 한 번씩만 다시 시도하고,
             // 대시보드의 재생오류 표시를 보고 사람이 원격 재부팅한다. 디코더가 오류 없이 깨진
             // 화면만 내보내는 경우(초록 줄무늬)는 여기로 안 오므로 앱이 감지할 수 없다.
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "재생 오류 - ${error.errorCodeName}", error)
                 if (::mqttManager.isInitialized) mqttManager.playerError = error.errorCodeName
-
-                val config = lastDeviceConfig ?: return
-                val now = SystemClock.elapsedRealtime()
-                val last = lastPlayerErrorRecoveryAt
-                if (last != null && now - last < PLAYER_ERROR_RECOVERY_INTERVAL_MS) return
-                lastPlayerErrorRecoveryAt = now
-                requestVideoSync(config, forceReload = true)
+                schedulePlayerErrorRecovery()
             }
         })
         playerView.player = player
@@ -1003,8 +1012,10 @@ class MainActivity : ComponentActivity() {
             return
         }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        // 실패하면 heartbeat(rebootError)로 서버에 알린다 - 대시보드 셀 툴팁에 사유가 뜬다.
         if (!dpm.isDeviceOwnerApp(packageName)) {
             Log.e(TAG, "REBOOT_DEVICE 수신 - Device Owner가 아니라 재부팅할 수 없음")
+            mqttManager.rebootError = "NOT_DEVICE_OWNER"
             return
         }
         Log.d(TAG, "REBOOT_DEVICE 수신 - 기기 재부팅")
@@ -1013,6 +1024,29 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             // 통화 중 등 시스템이 재부팅을 거부하는 경우 - 앱은 그대로 계속 동작한다.
             Log.e(TAG, "기기 재부팅 실패", e)
+            mqttManager.rebootError = "REBOOT_FAILED: ${e.javaClass.simpleName}"
+        }
+    }
+
+    // 재생 오류 복구(파일 재검증+재로드)를 예약한다. 마지막 시도로부터 간격이 지났으면 바로,
+    // 아니면 남은 시간 뒤에 한 번 실행한다. 이미 예약돼 있으면 그대로 둔다. 실행 시점에 오류가
+    // 이미 풀렸거나(STATE_READY에서 취소) 배정된 config가 아직 없으면 아무것도 안 한다 -
+    // config가 나중에 오면 syncVideoFile()이 player.playerError를 보고 다시 로드한다.
+    private fun schedulePlayerErrorRecovery() {
+        if (playerErrorRecoveryJob?.isActive == true) return
+        val last = lastPlayerErrorRecoveryAt
+        val waitMs = if (last == null) {
+            0L
+        } else {
+            maxOf(0L, last + PLAYER_ERROR_RECOVERY_INTERVAL_MS - SystemClock.elapsedRealtime())
+        }
+        playerErrorRecoveryJob = lifecycleScope.launch {
+            delay(waitMs)
+            if (player.playerError == null) return@launch
+            val config = lastDeviceConfig ?: return@launch
+            lastPlayerErrorRecoveryAt = SystemClock.elapsedRealtime()
+            Log.d(TAG, "재생 오류 복구 시도 - 파일 재검증 후 재로드")
+            requestVideoSync(config, forceReload = true)
         }
     }
 
@@ -1058,7 +1092,7 @@ class MainActivity : ComponentActivity() {
                 dest.path != currentVideoFile.path ||
                 (loadedChecksum != null && loadedChecksum != localChecksum)
             if (needsReload) loadVideo(dest, localChecksum) else loadedChecksum = localChecksum
-            completeSync(config, localChecksum)
+            withContext(NonCancellable) { completeSync(config, localChecksum) }
             return
         }
         if (localChecksum != null) Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
@@ -1071,29 +1105,36 @@ class MainActivity : ComponentActivity() {
         }
 
         val dir = dest.parentFile ?: File(config.videoPath)
-        when (val result = withContext(Dispatchers.IO) { downloadVerified(serverIp, currentVideo, dir, expected) }) {
-            is DownloadResult.Success -> {
-                try {
-                    // 교체 도중(플레이어 정지~재로드 사이)에 취소되면 플레이어가 멈춘 채로 남으므로
-                    // 이 구간은 취소 불가로 끝까지 실행한다.
-                    val replaced = withContext(NonCancellable) {
-                        replaceAndReload(result.tmpFile, dest, result.checksum)
+        try {
+            when (val result = withContext(Dispatchers.IO) { downloadVerified(serverIp, currentVideo, dir, expected) }) {
+                is DownloadResult.Success -> {
+                    // 교체 도중(플레이어 정지~재로드 사이)에 취소되면 플레이어가 멈춘 채로 남고,
+                    // 교체 후 완료 처리 전에 취소되면 화면엔 새 파일이 나오는데 보고/config.json
+                    // 갱신이 빠진다 - 교체부터 완료 처리까지 취소 불가로 끝까지 실행한다.
+                    withContext(NonCancellable) {
+                        if (replaceAndReload(result.tmpFile, dest, result.checksum)) {
+                            completeSync(config, result.checksum)
+                        } else {
+                            mqttManager.publishError("RENAME_FAILED", "$currentVideo.mp4 교체 실패")
+                        }
                     }
-                    if (replaced) {
-                        completeSync(config, result.checksum)
-                    } else {
-                        mqttManager.publishError("RENAME_FAILED", "$currentVideo.mp4 교체 실패")
-                    }
-                } finally {
-                    result.tmpFile.delete() // 교체됐으면 이미 없는 경로라 아무 일도 안 일어난다
                 }
+                is DownloadResult.ChecksumMismatch -> mqttManager.publishError(
+                    "CHECKSUM_MISMATCH",
+                    "$currentVideo.mp4 expected=$expected actual=${result.actual}",
+                )
+                DownloadResult.Failed -> mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드 실패")
             }
-            is DownloadResult.ChecksumMismatch -> mqttManager.publishError(
-                "CHECKSUM_MISMATCH",
-                "$currentVideo.mp4 expected=$expected actual=${result.actual}",
-            )
-            DownloadResult.Failed -> mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드 실패")
+        } finally {
+            // 교체에 성공한 파일은 이미 .download가 아니므로 남는 건 실패/취소된 임시 파일뿐이다 -
+            // 특히 다운로드가 끝난 순간 취소되면 결과(임시 파일)를 못 받아 여기서만 지울 수 있다.
+            // 다음 동기화는 이 작업이 끝난 뒤에만 시작하므로(cancelAndJoin) 지워도 안전하다.
+            deleteTempFiles(dir)
         }
+    }
+
+    private fun deleteTempFiles(dir: File) {
+        dir.listFiles { f -> f.name.endsWith(".download") }?.forEach { it.delete() }
     }
 
     // 동기화 성공 처리 - 로컬 config.json 갱신 + wall/ready 보고 + 중복 판단 기준값 갱신.
@@ -1104,14 +1145,25 @@ class MainActivity : ComponentActivity() {
         Log.d(SYNC_TAG, "동기화 완료 - ${config.currentVideo} (checksum=$checksum)")
     }
 
+    // IO 스레드에서 호출. verifiedFile과 경로/크기/수정시각이 같으면 다시 해시하지 않는다.
     private fun localChecksumOrNull(file: File): String? {
         if (!file.exists()) return null
+        val cached = verifiedFile
+        if (cached != null && cached.path == file.path && cached.length == file.length() &&
+            cached.lastModified == file.lastModified()
+        ) {
+            return cached.checksum
+        }
         return try {
-            sha256Of(file)
+            sha256Of(file).also { rememberVerified(file, it) }
         } catch (e: IOException) {
             Log.d(SYNC_TAG, "로컬 파일 읽기 실패 - 재다운로드 - ${file.path}", e)
             null
         }
+    }
+
+    private fun rememberVerified(file: File, checksum: String) {
+        verifiedFile = VerifiedFile(file.path, file.length(), file.lastModified(), checksum)
     }
 
     // 로컬 /sdcard/mediasphere/config.json의 videoPath/currentVideo를 갱신한다 (다른 필드는 유지).
@@ -1150,6 +1202,7 @@ class MainActivity : ComponentActivity() {
             return false
         }
 
+        rememberVerified(dest, checksum)
         loadVideo(dest, checksum)
         return true
     }
@@ -1171,8 +1224,7 @@ class MainActivity : ComponentActivity() {
 
     // 실패(네트워크 오류/타임아웃) 시 지수 백오프로 재시도하고, 받은 파일의 체크섬이 기대값과
     // 다르면 그 파일은 버리고 다시 받는다(OTA의 UpdateManager.downloadWithRetry와 같은 방식).
-    // 체크섬 불일치는 MAX_CHECKSUM_MISMATCH_RETRIES번까지만 다시 받는다 - 서버 파일 자체가
-    // manifest와 다른 경우라면 몇 번을 받아도 같으므로, 439대가 40~50MB를 반복해서 받는 걸 막는다.
+    // 체크섬 불일치가 MAX_CHECKSUM_MISMATCH_ATTEMPTS번 나오면 그만 받는다.
     private suspend fun downloadVerified(
         serverIp: String,
         currentVideo: String,
@@ -1180,9 +1232,9 @@ class MainActivity : ComponentActivity() {
         expected: String?,
     ): DownloadResult {
         dir.mkdirs()
-        // 이전 시도(취소/크래시)가 남긴 임시 파일 정리 - requestVideoSync()가 이전 작업이 끝난
+        // 앱이 다운로드 도중 죽어서 남은 임시 파일 정리 - requestVideoSync()가 이전 작업이 끝난
         // 뒤에만 여기로 오므로, 지금 이 폴더에 쓰고 있는 다른 다운로드는 없다.
-        dir.listFiles { f -> f.name.endsWith(".download") }?.forEach { it.delete() }
+        deleteTempFiles(dir)
 
         var mismatchCount = 0
         var lastMismatch: String? = null
@@ -1197,7 +1249,7 @@ class MainActivity : ComponentActivity() {
                 lastMismatch = checksum
                 Log.e(SYNC_TAG, "받은 파일 체크섬 불일치 - expected=$expected actual=$checksum "
                     + "($currentVideo, 시도 ${attempt + 1}/$MAX_DOWNLOAD_RETRIES)")
-                if (mismatchCount >= MAX_CHECKSUM_MISMATCH_RETRIES) break
+                if (mismatchCount >= MAX_CHECKSUM_MISMATCH_ATTEMPTS) break
             }
 
             if (attempt < MAX_DOWNLOAD_RETRIES - 1) {
@@ -1212,10 +1264,23 @@ class MainActivity : ComponentActivity() {
     // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 시도마다 이름이 다른 임시
     // 파일에 받고, 성공하면 (임시 파일, 체크섬)을 돌려준다 - 재생 파일 자리로의 교체는 체크섬
     // 확인 뒤 replaceAndReload()가 한다. 버퍼마다 취소를 확인해서 cancel()이 실제로 먹히게 한다.
-    private suspend fun downloadOnce(serverIp: String, currentVideo: String, dir: File): Pair<File, String>? {
+    private suspend fun downloadOnce(
+        serverIp: String,
+        currentVideo: String,
+        dir: File,
+    ): Pair<File, String>? = coroutineScope {
         val tmpFile = File(dir, "$currentVideo.mp4.${System.currentTimeMillis()}.download")
         var connection: HttpURLConnection? = null
         var success = false
+        // connect/read는 블로킹이라 버퍼마다 확인하는 ensureActive()만으론 최대 타임아웃(15초)만큼
+        // 취소가 늦어진다 - 취소되면 다른 스레드에서 연결을 끊어 막혀 있던 호출을 바로 풀어준다.
+        val canceller = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                if (!success) connection?.disconnect()
+            }
+        }
         try {
             val url = URL("http://$serverIp:$SERVER_PORT/clips/$currentVideo.mp4")
             connection = (url.openConnection() as HttpURLConnection).apply {
@@ -1226,7 +1291,7 @@ class MainActivity : ComponentActivity() {
 
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                 Log.e(SYNC_TAG, "다운로드 실패 - HTTP ${connection.responseCode}: $url")
-                return null
+                return@coroutineScope null
             }
 
             val digest = MessageDigest.getInstance("SHA-256")
@@ -1243,14 +1308,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
             success = true
-            return tmpFile to digest.digest().joinToString("") { "%02x".format(it) }
+            tmpFile to digest.digest().joinToString("") { "%02x".format(it) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // 취소 때문에 연결이 끊겨 난 예외면 실패가 아니라 취소로 전파한다
+            ensureActive()
             Log.e(SYNC_TAG, "다운로드 실패 - $currentVideo", e)
-            return null
+            null
         } finally {
             if (!success) tmpFile.delete()
+            canceller.cancel()
             connection?.disconnect()
         }
     }

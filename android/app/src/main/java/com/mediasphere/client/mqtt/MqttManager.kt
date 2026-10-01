@@ -210,6 +210,12 @@ class MqttManager(
     @Volatile
     var playerError: String? = null
 
+    // 원격 재부팅(REBOOT_DEVICE)을 받았는데 실행하지 못한 사유 - heartbeat에 실어 대시보드에서
+    // "재부팅 버튼을 눌렀는데 아무 일도 없는" 폰을 알 수 있게 한다. 재부팅에 성공하면 프로세스가
+    // 새로 뜨므로 자연히 null로 돌아간다.
+    @Volatile
+    var rebootError: String? = null
+
     // heartbeat에서 쓰는 것과 동일한 deviceId를 다른 곳(순차 점멸 등)에서도 재사용할 때 쓴다.
     fun deviceId(): Int = deviceId
 
@@ -597,6 +603,7 @@ class MqttManager(
             put("batteryPct", batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
             put("charging", batteryManager.isCharging)
             playerError?.let { put("playerError", it) }
+            rebootError?.let { put("rebootError", it) }
         }.toString()
 
         try {
