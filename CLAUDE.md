@@ -217,7 +217,14 @@ MediaSphere/
                  시작 시 재생 중인 영상 정지, 완료까지 재생 차단)
 - POST /api/restart-app    {"targetDeviceIds":[...]} (생략 시 전체)
 - POST /api/reboot-device  {"targetDeviceIds":[...]} (필수, 양의 정수 1개 이상)
-- POST /api/mode           {"mode":"video"|"pattern"}
+- POST /api/mode           {"mode":"video"|"pattern"|"text"}
+                 무언가 실행 중(영상 재생/재생목록/텍스트 패턴/텍스트 스크롤/점멸/순차 점멸)이면
+                 409 거부 - 먼저 정지해야 함. 대시보드 모드 탭도 같이 비활성화된다.
+- POST /api/idle           절전 모드(패턴 모드 + 검은 화면). 실행 중이면 409 거부
+- GET/POST /api/schedule   운영 시간 타이머 {"enabled","start":"HH:MM","end":"HH:MM","closedDays":[0~6]}
+                 (data/schedule.json 저장, 서버 현지 시각 기준). 운영 시간 경계에서만 동작 -
+                 시작: 전부 정지 후 영상 재생(배포 중이면 끝난 뒤), 종료: 전부 정지 후 절전.
+                 운영 시간 밖이거나 절전 중이면 업체 PLAY_TRIGGER는 무시(ERROR 응답)
 - POST /api/pattern/config {"color":"#FFFFFF","interval":500,"duration":3000}
 - POST /api/pattern/start
 - POST /api/pattern/stop

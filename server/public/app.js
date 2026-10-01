@@ -5,6 +5,20 @@ const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
 const playerErrorCountEl = document.getElementById('player-error-count');
 const playBlockedNoteEl = document.getElementById('play-blocked-note');
+const modeLockedNoteEl = document.getElementById('mode-locked-note');
+const scheduleBadgeEl = document.getElementById('schedule-badge');
+const scheduleEnabledEl = document.getElementById('schedule-enabled');
+const scheduleStartEl = document.getElementById('schedule-start');
+const scheduleEndEl = document.getElementById('schedule-end');
+const scheduleDayEls = [...document.querySelectorAll('#schedule-closed-days input[data-day]')];
+const btnScheduleSave = document.getElementById('btn-schedule-save');
+const scheduleStatusEl = document.getElementById('schedule-status');
+
+// 서버 STATUS_UPDATE.running 값 -> 화면 표시 이름
+const RUNNING_LABEL = {
+  video: '영상 재생', playlist: '재생목록', textPattern: '텍스트 패턴',
+  textScroll: '텍스트 스크롤', pattern: '점멸', sequence: '순차 점멸',
+};
 const batteryStatusCountEl = document.getElementById('battery-status-count');
 const deployProgressEl = document.getElementById('deploy-progress');
 const deployProgressTextEl = document.getElementById('deploy-progress-text');
@@ -259,6 +273,8 @@ function applyStatusUpdate(data) {
   }
 
   if (data.currentMode) setModeUi(data.currentMode, data.idleMode);
+  applyModeLock(data.running);
+  if (data.schedule) applySchedule(data.schedule);
 
   if (data.patternConfig && !editingPatternConfig) {
     patternColorEl.value = data.patternConfig.color;
@@ -301,6 +317,50 @@ function setModeUi(mode, idleMode) {
   videoControlsEl.hidden = !isVideo;
   patternControlsEl.hidden = !isPattern;
   textControlsEl.hidden = !isText;
+}
+
+// 무언가 실행 중이면 모드 탭과 절전 버튼을 막는다 - 서버도 같은 기준으로 /api/mode, /api/idle을
+// 거부한다(409). 운영 시간 타이머와 업체 1회 재생만 예외로 서버가 전부 정지한 뒤 모드를 바꾼다.
+function applyModeLock(running) {
+  [modeVideoBtn, modePatternBtn, modeTextBtn, btnIdle].forEach((btn) => { btn.disabled = Boolean(running); });
+  modeLockedNoteEl.hidden = !running;
+  if (running) {
+    modeLockedNoteEl.textContent = `${RUNNING_LABEL[running] || running} 중 - 정지한 뒤 모드를 바꿀 수 있습니다`;
+  }
+}
+
+// 입력 중인 값이 1초마다 오는 STATUS_UPDATE로 덮어써지지 않도록, 사용자가 건드린 뒤
+// 저장하기 전까지는 입력칸을 갱신하지 않는다.
+let scheduleDirty = false;
+
+function applySchedule(schedule) {
+  scheduleBadgeEl.textContent = schedule.enabled ? `타이머 ${schedule.start}~${schedule.end}` : '타이머 꺼짐';
+
+  if (!scheduleDirty) {
+    scheduleEnabledEl.checked = schedule.enabled;
+    scheduleStartEl.value = schedule.start;
+    scheduleEndEl.value = schedule.end;
+    scheduleDayEls.forEach((el) => { el.checked = schedule.closedDays.includes(Number(el.dataset.day)); });
+  }
+
+  const parts = [`서버 시각 ${schedule.serverTimeText}`];
+  if (!schedule.enabled) {
+    parts.push('타이머 꺼짐');
+  } else {
+    parts.push(schedule.operating ? '운영 중' : '운영 시간 아님');
+    if (schedule.nextAction) {
+      const label = schedule.nextAction.type === 'play' ? '영상 재생 시작' : '절전 전환';
+      parts.push(`다음: ${schedule.nextAction.atText} ${label}`);
+    }
+    if (schedule.waitingForDeploy) parts.push('영상 배포가 끝나면 재생 시작');
+  }
+  scheduleStatusEl.textContent = parts.join(' · ');
+}
+
+// 409 등 서버가 거부한 경우 사유를 보여준다.
+function alertOnError(res) {
+  if (res.ok) return null;
+  return res.json().then((body) => window.alert(body.error || '요청이 거부되었습니다.'));
 }
 
 function postJson(url, body) {
@@ -386,22 +446,54 @@ btnStop.addEventListener('click', () => {
 });
 
 modeVideoBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'video' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
+  postJson('/api/mode', { mode: 'video' }).then(alertOnError)
+    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
 });
 
 modePatternBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'pattern' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
+  postJson('/api/mode', { mode: 'pattern' }).then(alertOnError)
+    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
 });
 
 modeTextBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'text' }).catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
+  postJson('/api/mode', { mode: 'text' }).then(alertOnError)
+    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
 });
 
 // 서버 내부적으로는 패턴 모드로 전환하는 것뿐이지만(POST /api/idle), 대시보드에는
 // idleMode 플래그로 내려와 독립된 탭처럼 활성 표시되고 다른 컨트롤은 다 숨겨진다
 // (setModeUi 참고). 클릭 자체는 여기서 상태를 바꾸지 않고 STATUS_UPDATE를 기다린다.
 btnIdle.addEventListener('click', () => {
-  fetch('/api/idle', { method: 'POST' }).catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
+  fetch('/api/idle', { method: 'POST' }).then(alertOnError)
+    .catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
+});
+
+[scheduleEnabledEl, scheduleStartEl, scheduleEndEl, ...scheduleDayEls].forEach((el) => {
+  el.addEventListener('input', () => { scheduleDirty = true; });
+  el.addEventListener('change', () => { scheduleDirty = true; });
+});
+
+btnScheduleSave.addEventListener('click', () => {
+  const body = {
+    enabled: scheduleEnabledEl.checked,
+    start: scheduleStartEl.value,
+    end: scheduleEndEl.value,
+    closedDays: scheduleDayEls.filter((el) => el.checked).map((el) => Number(el.dataset.day)),
+  };
+  if (body.enabled && !window.confirm(
+    `운영 시간 ${body.start}~${body.end}로 저장할까요?\n`
+    + '타이머를 새로 켜면 지금 시각 기준으로 바로 적용됩니다(운영 시간이면 영상 재생, 아니면 절전).',
+  )) return;
+
+  postJson('/api/schedule', body)
+    .then((res) => {
+      if (res.ok) {
+        scheduleDirty = false;
+        return null;
+      }
+      return alertOnError(res);
+    })
+    .catch((err) => console.error('[HTTP] 운영 시간 저장 실패', err));
 });
 
 [

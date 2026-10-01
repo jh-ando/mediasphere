@@ -13,6 +13,7 @@
       <span id="online-count">온라인: 000 / 000</span>
       <span id="file-status-count" class="file-status-count">파일: 정상 0 / 불일치 0 / 무응답 0</span>
       <span id="player-error-count" class="file-status-count player-error-count">재생오류 0</span>
+      <span id="schedule-badge" class="file-status-count">타이머 꺼짐</span>
       <span id="battery-status-count" class="file-status-count">배터리: 정상 0 / 낮음 0 / 미충전 0 / 확인불가 0</span>
       <span id="deploy-progress" class="file-status-count deploy-progress" hidden>
         <span id="deploy-progress-text"></span>
@@ -39,6 +40,7 @@
       <button id="mode-text" class="mode-btn">텍스트 모드</button>
       <button id="btn-idle" class="mode-btn btn-idle">절전 모드</button>
     </div>
+    <span id="mode-locked-note" class="play-blocked-note" hidden></span>
 
     <div id="video-controls" class="control-group">
       <button id="btn-play" class="btn btn-play">영상 재생</button>
@@ -158,6 +160,26 @@
       <button id="btn-text-start" class="btn btn-play">텍스트 시작</button>
       <button id="btn-text-stop" class="btn btn-stop">텍스트 정지</button>
     </div>
+  </section>
+
+  <section class="admin-section">
+    <h2>운영 시간 타이머</h2>
+    <div class="schedule-row">
+      <label class="schedule-field"><input type="checkbox" id="schedule-enabled" /> 타이머 사용</label>
+      <label class="schedule-field">시작 <input type="time" id="schedule-start" class="schedule-input" /></label>
+      <label class="schedule-field">종료 <input type="time" id="schedule-end" class="schedule-input" /></label>
+      <span class="schedule-field" id="schedule-closed-days">휴관
+        <label><input type="checkbox" data-day="0" />일</label>
+        <label><input type="checkbox" data-day="1" />월</label>
+        <label><input type="checkbox" data-day="2" />화</label>
+        <label><input type="checkbox" data-day="3" />수</label>
+        <label><input type="checkbox" data-day="4" />목</label>
+        <label><input type="checkbox" data-day="5" />금</label>
+        <label><input type="checkbox" data-day="6" />토</label>
+      </span>
+      <button id="btn-schedule-save" class="btn-small">저장</button>
+    </div>
+    <div id="schedule-status" class="file-status-count schedule-status"></div>
   </section>
 
   <section class="admin-section">

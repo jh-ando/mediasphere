@@ -251,6 +251,98 @@ function loadTextPatternConfig() {
 
 loadTextPatternConfig();
 
+// ── 운영 시간 타이머 설정 ─────────────────────────────
+// 매일 start~end 동안만 영상을 재생하고, 그 밖의 시간과 휴관 요일엔 절전 모드로 둔다.
+// closedDays는 Date.getDay() 기준(0=일 ... 6=토). end가 start보다 이르면 자정을 넘기는
+// 구간(예: 22:00~02:00)이고, 이때 휴관일 판정은 구간이 "시작한 날" 기준이다.
+// 시각은 서버(Ubuntu)의 현지 시간대 기준 - 서버 시간대가 Asia/Seoul이어야 한다.
+const SCHEDULE_PATH = path.join(__dirname, '..', 'data', 'schedule.json');
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+state.schedule = { enabled: false, start: '10:00', end: '20:00', closedDays: [1] };
+
+function saveSchedule() {
+  try {
+    fs.mkdirSync(path.dirname(SCHEDULE_PATH), { recursive: true });
+    fs.writeFileSync(SCHEDULE_PATH, JSON.stringify(state.schedule, null, 2));
+  } catch (err) {
+    console.error('[HTTP] schedule.json 저장 실패:', err.message);
+  }
+}
+
+function loadSchedule() {
+  if (!fs.existsSync(SCHEDULE_PATH)) return;
+  try {
+    const loaded = JSON.parse(fs.readFileSync(SCHEDULE_PATH));
+    state.schedule = { ...state.schedule, ...loaded };
+    console.log(`[HTTP] schedule.json 로드 완료 - ${JSON.stringify(state.schedule)}`);
+  } catch (err) {
+    console.error('[HTTP] schedule.json 파싱 실패 - 기본값(꺼짐) 유지:', err.message);
+  }
+}
+
+loadSchedule();
+
+function hhmmToMinutes(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// date 시점이 운영 시간 안인지 - 휴관 요일이면 하루 종일 밖으로 본다.
+function isOperatingAt(date, schedule = state.schedule) {
+  const start = hhmmToMinutes(schedule.start);
+  const end = hhmmToMinutes(schedule.end);
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  let windowStartDay;
+  if (start < end) {
+    if (minutes < start || minutes >= end) return false;
+    windowStartDay = date.getDay();
+  } else if (minutes >= start) {
+    windowStartDay = date.getDay();
+  } else if (minutes < end) {
+    windowStartDay = (date.getDay() + 6) % 7; // 자정을 넘긴 구간 - 어제 시작한 구간이다
+  } else {
+    return false;
+  }
+  return !schedule.closedDays.includes(windowStartDay);
+}
+
+const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+function formatScheduleTime(date) {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${date.getMonth() + 1}/${date.getDate()}(${WEEKDAY_LABELS[date.getDay()]}) ${hh}:${mm}`;
+}
+
+// 지금 이후 가장 가까운 경계(재생 시작/절전 전환)를 찾는다 - 어제 시작해 자정을 넘긴 구간의
+// 종료도 잡히도록 어제부터 8일치 구간을 훑는다. 휴관 요일에 시작하는 구간은 건너뛴다.
+function computeNextScheduleAction(now = new Date()) {
+  const start = hhmmToMinutes(state.schedule.start);
+  const end = hhmmToMinutes(state.schedule.end);
+  let next = null;
+  for (let d = -1; d <= 7; d += 1) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d);
+    if (state.schedule.closedDays.includes(day.getDay())) continue;
+    const startAt = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, start);
+    const endAt = new Date(day.getFullYear(), day.getMonth(), day.getDate() + (end <= start ? 1 : 0), 0, end);
+    for (const [type, at] of [['play', startAt], ['idle', endAt]]) {
+      if (at > now && (!next || at < next.at)) next = { type, at };
+    }
+  }
+  return next;
+}
+
+// ── 실행 중 추적 ─────────────────────────────────────
+// 재생 중에는 모드 전환/절전을 막는다(/api/mode, /api/idle 409). 영상 재생(state.isPlaying),
+// 재생목록(playlistState), 텍스트 패턴 순환(textPatternTimer)은 원래 서버가 알고 있었고,
+// 단독/순차 점멸과 텍스트 스크롤은 원래 서버가 기록하지 않던 것이라 여기서 따로 기록한다.
+// 점멸은 끝나는 시각(epoch ms)을, 지속시간 0(무한 반복)이면 Infinity를 기록한다.
+const activity = { patternUntil: 0, sequenceUntil: 0, textScroll: false };
+
+// 1회 재생(PLAY_TRIGGER) 후 원래 모드 복귀 예약 - 그 사이에 다른 동작(타이머 절전, 새 트리거
+// 등)이 끼어들면 stopAllActivity()가 세대를 올려서 뒤늦게 엉뚱한 모드로 복귀하지 않게 한다.
+const oneShotReturn = { gen: 0, timer: null };
+
 // ── 기기 온라인 상태 ──────────────────────────────────
 // deviceId(문자열) -> 마지막 heartbeat 수신 시각(epoch ms)
 const deviceLastSeen = {};
@@ -894,7 +986,10 @@ function triggerPlay() {
 // 원래 있던 모드로 복귀시키고 처음부터 다시 재생한다("1회 재생 후 복귀"). 영상
 // 모드에서 온 PLAY_TRIGGER는 이 함수 자체를 안 타므로 평소처럼 계속 반복 재생된다
 // (playbackWss 핸들러에서 previousMode==='video'면 호출 안 함).
+// 트리거 직전에 stopAllActivity()로 이전 모드의 재생목록/텍스트 등은 이미 멈춰 있다. 복귀 전에
+// 다른 동작(타이머 절전, 새 트리거, 수동 정지 등)이 끼어들었으면 복귀하지 않는다.
 async function scheduleReturnFromOneShotPlay(previousMode) {
+  const gen = oneShotReturn.gen;
   let durationMs;
   try {
     durationMs = await getVideoDurationMs();
@@ -902,12 +997,15 @@ async function scheduleReturnFromOneShotPlay(previousMode) {
     console.error('[HTTP] 영상 길이 확인 실패 - 원래 모드로 자동 복귀를 생략합니다:', err.message);
     return;
   }
+  if (gen !== oneShotReturn.gen) return;
 
-  // 재생목록이 돌고 있었다면 먼저 정지 - 안 그러면 영상이 재생되는 동안에도 뒤에서
-  // 계속 큐가 넘어가다가, 복귀 시점에 큐 0번을 또 새로 시작해서 타이머가 꼬인다.
-  if (playlistState.playing) stopPlaylist();
-
-  setTimeout(() => {
+  oneShotReturn.timer = setTimeout(() => {
+    oneShotReturn.timer = null;
+    if (gen !== oneShotReturn.gen || !state.isPlaying || state.currentMode !== 'video') {
+      console.log('[HTTP] PLAY_TRIGGER 1회 재생 중 다른 동작이 있어 원래 모드 복귀 생략');
+      return;
+    }
+    stopVideoPlayback();
     state.currentMode = previousMode;
     publishControl({ type: MODE_MQTT_TYPES[previousMode] });
     try {
@@ -948,6 +1046,62 @@ function stopVideoPlayback() {
   publishControl({ type: 'STOP', elapsedMs: state.stoppedElapsedMs });
 }
 
+// 지금 실행 중인 것 - 없으면 null. 대시보드가 모드 탭/절전 버튼을 막는 근거(STATUS_UPDATE.running).
+function getRunningActivity() {
+  if (state.isPlaying) return 'video';
+  if (playlistState.playing) return 'playlist';
+  if (textPatternTimer) return 'textPattern';
+  if (activity.textScroll) return 'textScroll';
+  const now = Date.now();
+  if (activity.patternUntil > now) return 'pattern';
+  if (activity.sequenceUntil > now) return 'sequence';
+  return null;
+}
+
+// 실행 중인 것을 전부 정지한다 - 재생 중 모드 변경은 막지만, 예외적으로 모드를 바꿔야 하는
+// 경우(운영 시간 타이머의 시작/종료, 업체 1회 재생 신호)엔 이걸로 먼저 모두 멈춘 뒤 바꾼다.
+function stopAllActivity() {
+  oneShotReturn.gen += 1;
+  if (oneShotReturn.timer) {
+    clearTimeout(oneShotReturn.timer);
+    oneShotReturn.timer = null;
+  }
+  if (state.isPlaying) stopVideoPlayback();
+  if (playlistState.playing) stopPlaylist();
+  if (textPatternTimer) {
+    clearTimeout(textPatternTimer);
+    textPatternTimer = null;
+    publishControl({ type: 'TEXT_PATTERN_STOP' }, { retain: false });
+  }
+  if (activity.textScroll) publishControl({ type: 'TEXT_STOP' }, { retain: false });
+  const now = Date.now();
+  if (activity.patternUntil > now) publishControl({ type: 'PATTERN_STOP' }, { retain: false });
+  if (activity.sequenceUntil > now) publishControl({ type: 'SEQUENCE_STOP' }, { retain: false });
+  activity.patternUntil = 0;
+  activity.sequenceUntil = 0;
+  activity.textScroll = false;
+}
+
+// 절전 모드로 전환한다(패턴 모드 + 검은 화면) - /api/idle과 운영 시간 타이머가 공유한다.
+function enterIdle() {
+  state.currentMode = 'pattern';
+  state.idleMode = true;
+  publishControl({ type: MODE_MQTT_TYPES.pattern });
+}
+
+const RUNNING_LABELS = {
+  video: '영상 재생', playlist: '재생목록', textPattern: '텍스트 패턴',
+  textScroll: '텍스트 스크롤', pattern: '점멸', sequence: '순차 점멸',
+};
+
+function rejectWhileRunning(res, running) {
+  res.status(409).json({
+    success: false,
+    error: `${RUNNING_LABELS[running]} 중에는 모드를 바꿀 수 없습니다. 먼저 정지하세요.`,
+    running,
+  });
+}
+
 // 재생 정지: isPlaying = false, 정지 시점의 elapsedMs를 고정해둔다. MQTT로 STOP 명령도 함께 발행한다.
 app.post('/api/stop', (req, res) => {
   stopVideoPlayback();
@@ -961,6 +1115,18 @@ app.post('/api/mode', (req, res) => {
   const { mode } = req.body;
   if (!MODE_MQTT_TYPES[mode]) {
     res.status(400).json({ success: false, error: 'mode는 "video", "pattern", "text" 중 하나여야 합니다.' });
+    return;
+  }
+
+  // 이미 그 모드면 아무것도 안 한다 - 다시 발행하면 폰이 그 모드를 초기화해서(예: 패턴
+  // 모드 재진입 시 점멸 정리) 진행 중인 걸 끊어버린다.
+  if (mode === state.currentMode && !state.idleMode) {
+    res.json({ success: true, state });
+    return;
+  }
+  const running = getRunningActivity();
+  if (running) {
+    rejectWhileRunning(res, running);
     return;
   }
 
@@ -978,12 +1144,19 @@ app.post('/api/mode', (req, res) => {
 // 만들어주므로 이거 하나로 충분하다. 화면이 꺼지는 건 아니고(잠금/절전 비활성화는
 // 동기화 때문에 유지) 검은 화면을 계속 띄우는 것 - AMOLED라 검은 픽셀은 꺼진 것과
 // 같아 화면 마모/번인 걱정은 없다.
+// 재생 중에는 막는다(먼저 정지해야 함) - 운영 시간 타이머의 절전 전환만 예외로 전부 정지 후 전환한다.
 app.post('/api/idle', (req, res) => {
-  if (playlistState.playing) stopPlaylist();
+  if (state.idleMode) {
+    res.json({ success: true, state });
+    return;
+  }
+  const running = getRunningActivity();
+  if (running) {
+    rejectWhileRunning(res, running);
+    return;
+  }
 
-  state.currentMode = 'pattern';
-  state.idleMode = true;
-  publishControl({ type: MODE_MQTT_TYPES.pattern });
+  enterIdle();
 
   console.log('[HTTP] 절전 모드 전환 - 화면 검게');
   res.json({ success: true, state });
@@ -1019,13 +1192,17 @@ app.post('/api/pattern/config', (req, res) => {
 // 패턴(점멸) 시작 - 500ms 뒤를 startAt으로 잡아 폰들이 동시에 시작할 여유를 준다.
 app.post('/api/pattern/start', (req, res) => {
   state.idleMode = false;
+  const startAt = Date.now() + 500;
+  activity.patternUntil = state.patternConfig.duration > 0
+    ? startAt + state.patternConfig.duration + FADE_OUT_MS
+    : Infinity;
   publishControl(
     {
       type: 'PATTERN_START',
       color: state.patternConfig.color,
       interval: state.patternConfig.interval,
       duration: state.patternConfig.duration,
-      startAt: Date.now() + 500,
+      startAt,
       colorMode: state.patternConfig.colorMode,
       colorSaturation: state.patternConfig.colorSaturation,
     },
@@ -1038,6 +1215,7 @@ app.post('/api/pattern/start', (req, res) => {
 
 // 패턴(점멸) 정지 - 마지막 색상은 폰 쪽에서 유지한다.
 app.post('/api/pattern/stop', (req, res) => {
+  activity.patternUntil = 0;
   publishControl({ type: 'PATTERN_STOP' }, { retain: false });
 
   console.log('[HTTP] 패턴 정지');
@@ -1255,6 +1433,7 @@ function startTextScroll() {
       + 'deploy.py/gen_manifest.py 실행 및 /api/distribute/publish 발행 여부를 확인하세요.');
   }
   state.idleMode = false;
+  activity.textScroll = true;
 
   const cfg = state.textScrollConfig;
   const centerRow = computeCenterRow();
@@ -1293,6 +1472,7 @@ app.post('/api/text/start', (req, res) => {
 });
 
 app.post('/api/text/stop', (req, res) => {
+  activity.textScroll = false;
   publishControl({ type: 'TEXT_STOP' }, { retain: false });
 
   console.log('[HTTP] 텍스트 스크롤 정지');
@@ -1330,11 +1510,13 @@ let textPatternTimer = null;
 function dispatchTextPatternWord(words, index) {
   if (!manifest) {
     console.error('[HTTP] 텍스트 패턴 순환 중단 - manifest 없음');
+    textPatternTimer = null;
     return 0;
   }
   const rowCounts = computeRowCounts();
   if (!rowCounts) {
     console.error('[HTTP] 텍스트 패턴 순환 중단 - devices[].meta.row 정보 없음');
+    textPatternTimer = null;
     return 0;
   }
   const gridCols = Math.max(...rowCounts);
@@ -1430,6 +1612,11 @@ app.post('/api/text-pattern/stop', (req, res) => {
 app.post('/api/sequence/start', (req, res) => {
   state.idleMode = false;
   const totalDevices = Object.keys(deviceLastSeen).filter((id) => isDeviceOnline(id)).length;
+  // 순차 점멸의 duration은 그룹 시작 시각 기준 절대 종료 시각이다(폰 PatternAnimator 참고).
+  const startAt = Date.now() + 500;
+  activity.sequenceUntil = state.patternConfig.duration > 0
+    ? startAt + state.patternConfig.duration + FADE_OUT_MS
+    : Infinity;
 
   publishControl(
     {
@@ -1438,7 +1625,7 @@ app.post('/api/sequence/start', (req, res) => {
       interval: state.patternConfig.interval,
       duration: state.patternConfig.duration,
       stepDelay: state.patternConfig.stepDelay,
-      startAt: Date.now() + 500,
+      startAt,
       totalDevices,
       colorMode: state.patternConfig.colorMode,
       colorSaturation: state.patternConfig.colorSaturation,
@@ -1452,6 +1639,7 @@ app.post('/api/sequence/start', (req, res) => {
 
 // 순차 점멸 정지
 app.post('/api/sequence/stop', (req, res) => {
+  activity.sequenceUntil = 0;
   publishControl({ type: 'SEQUENCE_STOP' }, { retain: false });
 
   console.log('[HTTP] 순차 점멸 정지');
@@ -1982,7 +2170,19 @@ playbackWss.on('connection', (ws) => {
         return;
       }
 
+      if (state.idleMode) {
+        console.log('[WS] PLAY_TRIGGER 무시 - 절전 모드');
+        ws.send(JSON.stringify({ type: 'ERROR', message: '절전 모드라 재생 신호를 무시합니다.' }));
+        return;
+      }
+      if (state.schedule.enabled && !isOperatingAt(new Date())) {
+        console.log('[WS] PLAY_TRIGGER 무시 - 운영 시간 밖');
+        ws.send(JSON.stringify({ type: 'ERROR', message: '운영 시간이 아니라 재생 신호를 무시합니다.' }));
+        return;
+      }
+
       const previousMode = state.currentMode;
+      stopAllActivity();
       const startAt = triggerPlay();
       console.log(`[WS] PLAY_TRIGGER 수신 - startAt=${startAt}`);
       ws.send(JSON.stringify({ type: 'ACK', received: 'PLAY_TRIGGER', startAt }));
@@ -2012,6 +2212,114 @@ playbackWss.on('connection', (ws) => {
 function computeOtaStatus(deviceId) {
   const reported = deviceOtaState[deviceId];
   return reported ? reported.phase : 'idle';
+}
+
+// ── 운영 시간 타이머 API / 실행 ───────────────────────
+app.get('/api/schedule', (req, res) => {
+  res.json({ ok: true, schedule: state.schedule });
+});
+
+app.post('/api/schedule', (req, res) => {
+  const { enabled, start, end, closedDays } = req.body || {};
+  const next = { ...state.schedule };
+  if (enabled !== undefined) {
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ ok: false, error: 'enabled는 true/false여야 합니다.' });
+      return;
+    }
+    next.enabled = enabled;
+  }
+  for (const [key, value] of [['start', start], ['end', end]]) {
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !HHMM_RE.test(value)) {
+      res.status(400).json({ ok: false, error: `${key}는 HH:MM(00:00~23:59) 형식이어야 합니다.` });
+      return;
+    }
+    next[key] = value;
+  }
+  if (closedDays !== undefined) {
+    if (!Array.isArray(closedDays) || !closedDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) {
+      res.status(400).json({ ok: false, error: 'closedDays는 0(일)~6(토) 정수 배열이어야 합니다.' });
+      return;
+    }
+    next.closedDays = [...new Set(closedDays)].sort();
+  }
+  if (next.start === next.end) {
+    res.status(400).json({ ok: false, error: '시작 시각과 종료 시각이 같습니다.' });
+    return;
+  }
+  if (next.closedDays.length === 7) {
+    res.status(400).json({ ok: false, error: '모든 요일을 휴관으로 지정할 수 없습니다.' });
+    return;
+  }
+
+  const wasEnabled = state.schedule.enabled;
+  state.schedule = next;
+  saveSchedule();
+  // 새로 켰으면 지금 시각 기준으로 바로 한 번 적용한다(서버 시작 때와 같은 처리). 이미 켜져 있던
+  // 상태에서 시각만 바꿨으면 이전 판정과 비교해 경계를 넘은 경우에만 동작한다.
+  if (!wasEnabled && next.enabled) scheduleRuntime.wasOperating = null;
+  scheduleTick();
+
+  console.log(`[HTTP] 운영 시간 타이머 저장 - ${JSON.stringify(state.schedule)}`);
+  res.json({ ok: true, schedule: state.schedule });
+});
+
+// 운영 시간 타이머 실행 상태. wasOperating은 직전 판정(null이면 아직 판정 전 - 서버 시작 직후나
+// 타이머를 새로 켠 직후라 지금 상태를 한 번 그대로 적용한다). pendingStart는 시작 시각이 됐는데
+// 영상 배포 중이라 재생을 못 한 상태 - 배포가 끝나면 다음 틱에서 재생한다.
+const SCHEDULE_TICK_MS = 15000;
+const scheduleRuntime = { wasOperating: null, pendingStart: false, waitLogged: false };
+
+// 정해진 시각에 예약 타이머를 거는 대신 주기적으로 "지금 운영 시간인가"를 판정하고, 판정이
+// 바뀌는 순간(경계)에만 동작한다 - 시계 보정/서버 재시작에도 어긋나지 않고, 운영 중 운영자가
+// 수동으로 모드를 바꿔도 다음 경계까지는 건드리지 않는다.
+function scheduleTick() {
+  if (!state.schedule.enabled) {
+    scheduleRuntime.wasOperating = null;
+    scheduleRuntime.pendingStart = false;
+    return;
+  }
+
+  const operating = isOperatingAt(new Date());
+  if (operating !== scheduleRuntime.wasOperating) {
+    scheduleRuntime.wasOperating = operating;
+    if (operating) {
+      scheduleRuntime.pendingStart = true;
+      scheduleRuntime.waitLogged = false;
+    } else {
+      scheduleRuntime.pendingStart = false;
+      stopAllActivity();
+      enterIdle();
+      console.log('[HTTP] 운영 시간 타이머 - 운영 종료, 절전 모드로 전환');
+    }
+  }
+
+  if (scheduleRuntime.pendingStart) {
+    if (isDeployBlockingPlay()) {
+      if (!scheduleRuntime.waitLogged) {
+        console.log('[HTTP] 운영 시간 타이머 - 영상 배포 중이라 배포가 끝난 뒤 재생 시작');
+        scheduleRuntime.waitLogged = true;
+      }
+      return;
+    }
+    scheduleRuntime.pendingStart = false;
+    stopAllActivity();
+    triggerPlay();
+    console.log('[HTTP] 운영 시간 타이머 - 운영 시작, 영상 재생');
+  }
+}
+
+function buildSchedulePayload() {
+  const now = new Date();
+  const next = state.schedule.enabled ? computeNextScheduleAction(now) : null;
+  return {
+    ...state.schedule,
+    operating: state.schedule.enabled ? isOperatingAt(now) : null,
+    serverTimeText: formatScheduleTime(now),
+    nextAction: next ? { type: next.type, atText: formatScheduleTime(next.at) } : null,
+    waitingForDeploy: scheduleRuntime.pendingStart,
+  };
 }
 
 function buildStatusPayload() {
@@ -2061,6 +2369,8 @@ function buildStatusPayload() {
     playState: state.isPlaying ? 'playing' : 'stopped',
     currentMode: state.currentMode,
     idleMode: state.idleMode,
+    running: getRunningActivity(),
+    schedule: buildSchedulePayload(),
     patternConfig: state.patternConfig,
     textScrollConfig: state.textScrollConfig,
     textPatternConfig: state.textPatternConfig,
@@ -2089,6 +2399,10 @@ setInterval(() => {
 // 시작 시 한 번 찍어서, distribute/apk 위치가 기대와 다르면 바로 눈에 띄게 한다.
 console.log(`[HTTP] DISTRIBUTE_DIR = ${DISTRIBUTE_DIR}`);
 console.log(`[HTTP] APK_DIR = ${APK_DIR}`);
+
+// 서버 시작 직후(MQTT 연결 여유를 두고) 한 번, 이후 주기적으로 운영 시간 판정
+setTimeout(scheduleTick, 3000);
+setInterval(scheduleTick, SCHEDULE_TICK_MS);
 
 httpServer.listen(HTTP_PORT, () => {
   console.log(`[HTTP] 서버 시작 - http://localhost:${HTTP_PORT}`);

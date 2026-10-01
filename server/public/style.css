@@ -147,6 +147,47 @@ body {
   color: #e6e8eb;
 }
 
+.mode-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: #c9ced6;
+}
+
+.schedule-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schedule-field label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.schedule-input {
+  background: #12151a;
+  border: 1px solid #2f3542;
+  border-radius: 4px;
+  color: #e6e8eb;
+  padding: 4px 6px;
+  font-size: 13px;
+  color-scheme: dark;
+}
+
+.schedule-status {
+  text-align: center;
+}
+
 .control-group {
   display: flex;
   flex-wrap: wrap;
