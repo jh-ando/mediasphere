@@ -404,13 +404,21 @@ function handleFileError(deviceId, payload) {
 
 // 대시보드에 노출할 3단계 상태. 응답 없음(무응답/heartbeat 끊김)이 체크섬 불일치보다 먼저 판정된다 -
 // 오프라인 상태에서 온 오래된 ready/error 보고를 "정상"으로 오인하지 않기 위함.
+// ok/mismatch는 저장해둔 판정(status)이 아니라, 폰이 마지막으로 보고한 체크섬을 "지금 로드된"
+// manifest와 매번 다시 비교해서 정한다. 예전엔 보고 시점의 판정을 그대로 돌려줘서, 새 영상
+// manifest를 읽은 뒤에도 옛 영상 기준으로 정상이던 폰이 계속 "정상"으로 남았다 - 그 탓에 웨이브
+// 배포가 거의 모든 폰을 "이미 정상"으로 분류해 동시 다운로드 제한이 사실상 안 걸렸다(0/1 배포 중,
+// 2026-09). 실패 보고(wall/error)는 checksum이 null이라 자동으로 불일치가 된다.
 function computeFileStatus(deviceId) {
   if (!manifest) return 'unknown';
   if (!isDeviceOnline(deviceId)) return 'unknown';
 
   const reported = deviceFileState[deviceId];
   if (!reported) return 'unknown'; // 온라인이지만 아직 ready/error 보고가 한 번도 없음
-  return reported.status;
+
+  const expected = manifestByDeviceId[deviceId];
+  const ok = Boolean(expected && expected.checksum && reported.checksum === expected.checksum);
+  return ok ? 'ok' : 'mismatch';
 }
 
 // ── 영상 배포 (동시 다운로드 대수 제한) ─────────────────
