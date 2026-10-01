@@ -29,6 +29,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -41,9 +42,14 @@ import com.mediasphere.client.sync.DriftCorrector
 import com.mediasphere.client.sync.TimeSyncManager
 import com.mediasphere.client.text.TextScrollView
 import com.mediasphere.client.update.UpdateManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -80,6 +86,13 @@ private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 // downloadWithRetry)와 동일한 지수 백오프 재시도를 추가한다(실기기에서 검증된 값, 2026-09).
 private const val MAX_DOWNLOAD_RETRIES = 4
 private const val DOWNLOAD_BASE_BACKOFF_MS = 2000L
+// 받은 파일의 체크섬이 기대값과 다를 때 다시 받는 최대 횟수(MAX_DOWNLOAD_RETRIES 안에서).
+private const val MAX_CHECKSUM_MISMATCH_RETRIES = 2
+// 재생 중인 파일을 교체하기 전 player.stop()이 내부 재생 스레드에서 처리될 때까지 기다리는 시간
+private const val PLAYER_STOP_SETTLE_MS = 200L
+// 재생 오류 시 자동 복구(파일 재검증+재로드)를 시도하는 최소 간격 - 디코더가 고장 난 경우엔
+// 재로드로 안 풀리므로, 디코더를 계속 다시 만들며 반복 시도하지 않게 한다.
+private const val PLAYER_ERROR_RECOVERY_INTERVAL_MS = 60_000L
 private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 ID를 보여주는 시간
 // 왼쪽 위 구석(kioskExitZone)을 이 횟수만큼 연속으로 빠르게 탭해야 Lock Task Mode가
 // 풀린다 - 탭 사이 간격이 KIOSK_EXIT_TAP_WINDOW_MS를 넘으면 그동안 센 횟수는 리셋된다.
@@ -88,6 +101,15 @@ private const val KIOSK_EXIT_TAP_WINDOW_MS = 1500L
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
+
+// 영상 동기화 대상 - 같은 대상의 동기화가 이미 진행 중이면 새 요청을 무시하는 기준.
+private data class SyncTarget(val videoPath: String, val currentVideo: String, val checksum: String?)
+
+private sealed class DownloadResult {
+    class Success(val tmpFile: File, val checksum: String) : DownloadResult()
+    class ChecksumMismatch(val actual: String) : DownloadResult()
+    object Failed : DownloadResult()
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -146,19 +168,24 @@ class MainActivity : ComponentActivity() {
     // 실패한 뒤 앱을 재시작하기 전엔 스스로 복구가 안 되던 원인, 2026-09).
     private var lastSyncedConfig: MqttControlMessage.DeviceConfig? = null
 
-    // syncVideoFile()이 실행한 코루틴 - 새 config/CHECK_UPDATE로 또 호출되면 이전 걸 취소하고
-    // 새로 시작한다. 재배포 직후엔 개별 config(retain) 수신과 지연 CHECK_UPDATE, 거기다 재연결
-    // 겹침까지 같은 폰에 동기화 트리거가 몰릴 수 있는데, 취소 없이 그냥 둘 다 돌게 두면 한
-    // 코루틴이 다운로드 완료로 파일을 교체(rename)하는 순간 다른 코루틴이 그 파일의 체크섬을
-    // 읽으려다 FileNotFoundException으로 죽는 레이스가 있었다(실기기에서 확인, 2026-09) -
-    // 이 예외 자체도 아래서 못 잡고 있어서 앱 전체가 크래시했다. 재배포가 끝난 직후뿐 아니라,
-    // 다운로드에 실패해 lastSyncedConfig가 못 갱신된 폰은 이후 아무 때나(몇 시간 뒤라도) 재연결이
-    // 겹치면 같은 레이스가 재현될 수 있다.
+    // 지금 돌고 있는 영상 동기화 코루틴과 그 대상 - requestVideoSync()가 같은 대상 요청은
+    // 무시하고, 다른 대상이면 이 작업이 실제로 끝날 때까지 기다린 뒤 새로 시작한다.
+    // 재배포 직후엔 개별 config(retain) 수신, CHECK_UPDATE, 재연결 겹침까지 같은 폰에 동기화
+    // 요청이 몰리는데, 동시에 두 개가 돌면 같은 파일을 두 번 받고 교체하며 디코더에 깨진
+    // 데이터가 들어가는 문제가 있었다(2026-09).
     private var syncJob: Job? = null
+    private var syncTarget: SyncTarget? = null
 
     // 지금 ExoPlayer에 실제로 로드돼 있는 파일 - 동기화 결과가 이미 적용된 파일과 같으면
     // 재로드(위치 초기화)를 건너뛰기 위한 기준값. onCreate에서 초기 재생 파일로 세팅된다.
     private lateinit var currentVideoFile: File
+
+    // currentVideoFile을 로드할 때 확인된 체크섬 - 새로 동기화된 파일과 같으면 재로드를 건너뛴다.
+    // null이면 앱 시작 때 config.json 기준으로 로드해서 아직 체크섬을 확인 안 한 상태.
+    private var loadedChecksum: String? = null
+
+    // 재생 오류 자동 복구를 마지막으로 시도한 시각(elapsedRealtime) - PLAYER_ERROR_RECOVERY_INTERVAL_MS 제한용
+    private var lastPlayerErrorRecoveryAt: Long? = null
 
     // startPlayback() 시점에 player.duration이 아직 C.TIME_UNSET(-1)이라 seekTo를 못한 경우,
     // STATE_READY가 된 뒤 지연 seek를 수행하기 위해 startAt을 보관해둔다.
@@ -266,6 +293,9 @@ class MainActivity : ComponentActivity() {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState != Player.STATE_READY) return
 
+                // 재생이 정상으로 돌아왔으면 서버에 보고하던 재생 오류를 지운다
+                if (::mqttManager.isInitialized) mqttManager.playerError = null
+
                 val startAt = pendingStartAt ?: return
                 val duration = player.duration
                 if (duration <= 0) return
@@ -274,6 +304,23 @@ class MainActivity : ComponentActivity() {
                 player.seekTo(targetPos)
                 Log.d(TAG, "지연 seek 완료 - targetPos=${targetPos}ms")
                 pendingStartAt = null
+            }
+
+            // 재생 오류(파일을 못 읽음, 디코더 초기화 실패 등) - heartbeat로 서버에 보고하고
+            // 파일 재검증+재로드를 한 번 시도한다. 디코더 자체가 고장 났으면 재로드로 안 풀리므로
+            // 자동 재시도는 PLAYER_ERROR_RECOVERY_INTERVAL_MS에 한 번만 하고, 계속 실패하면
+            // 대시보드의 재생오류 표시를 보고 사람이 원격 재부팅한다. 디코더가 오류 없이 깨진
+            // 화면만 내보내는 경우(초록 줄무늬)는 여기로 안 오므로 앱이 감지할 수 없다.
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG, "재생 오류 - ${error.errorCodeName}", error)
+                if (::mqttManager.isInitialized) mqttManager.playerError = error.errorCodeName
+
+                val config = lastDeviceConfig ?: return
+                val now = SystemClock.elapsedRealtime()
+                val last = lastPlayerErrorRecoveryAt
+                if (last != null && now - last < PLAYER_ERROR_RECOVERY_INTERVAL_MS) return
+                lastPlayerErrorRecoveryAt = now
+                requestVideoSync(config, forceReload = true)
             }
         })
         playerView.player = player
@@ -411,8 +458,9 @@ class MainActivity : ComponentActivity() {
             is MqttControlMessage.Load -> {
                 Log.d(TAG, "LOAD 수신 (video=${message.video}) - 아직 미구현")
             }
-            MqttControlMessage.CheckUpdate -> handleCheckUpdate()
+            is MqttControlMessage.CheckUpdate -> handleCheckUpdate(message)
             is MqttControlMessage.RestartApp -> handleRestartApp(message)
+            is MqttControlMessage.RebootDevice -> handleRebootDevice(message)
             is MqttControlMessage.DeviceConfig -> handleDeviceConfig(message)
             is MqttControlMessage.UpdateApk -> updateManager.handleUpdate(message)
             MqttControlMessage.ModeVideo -> handleModeVideo()
@@ -879,7 +927,7 @@ class MainActivity : ComponentActivity() {
     // retain 특성상 재접속마다 같은 내용이 다시 오고, 게다가 서버가 qos:1로 발행하기 때문에
     // MQTT 스펙상("적어도 한 번" 전달) 신호가 불안정한 폰은 완전히 동일한 메시지를 짧은
     // 간격으로 중복 수신할 수 있다(재전송 - 버그가 아니라 QoS 1의 정상 동작). 여기서 직전에
-    // "성공적으로 동기화 완료"한 내용과 완전히 같으면 syncVideoFile 호출 자체를 건너뛴다 -
+    // "성공적으로 동기화 완료"한 내용과 완전히 같으면 동기화 요청 자체를 건너뛴다 -
     // 아직 동기화에 실패한 상태(lastSyncedConfig 미갱신)라면 내용이 같아도 다시 시도한다.
     private fun handleDeviceConfig(message: MqttControlMessage.DeviceConfig) {
         lastDeviceConfig = message
@@ -890,18 +938,24 @@ class MainActivity : ComponentActivity() {
             Log.d(SYNC_TAG, "이미 동기화 완료된 내용과 동일 - 재검증 스킵")
             return
         }
-        syncVideoFile(message)
+        requestVideoSync(message)
     }
 
     // CHECK_UPDATE - 서버가 "지금 파일 상태를 다시 확인해서 보고해줘"라고 요청할 때 수신.
-    // 아직 DeviceConfig를 한 번도 못 받았으면(예: manifest 배치 전) 검증할 대상이 없어 무시한다.
-    private fun handleCheckUpdate() {
+    // targetDeviceIds가 있으면 내가 포함된 경우에만 처리한다(서버는 배포 후 아직 새 파일이
+    // 확인 안 된 폰에만 보낸다). 아직 DeviceConfig를 한 번도 못 받았으면 검증할 대상이 없어 무시한다.
+    private fun handleCheckUpdate(message: MqttControlMessage.CheckUpdate) {
+        val targets = message.targetDeviceIds
+        if (targets != null && mqttManager.deviceId() !in targets) {
+            Log.d(SYNC_TAG, "CHECK_UPDATE 수신 - 대상 아님")
+            return
+        }
         val config = lastDeviceConfig
         if (config == null) {
             Log.d(SYNC_TAG, "CHECK_UPDATE 수신 - 아직 배정된 config 없음, 스킵")
             return
         }
-        syncVideoFile(config)
+        requestVideoSync(config)
     }
 
     // RESTART_APP - targetDeviceIds가 없으면(전체 대상) 무조건, 있으면 내 deviceId가
@@ -928,67 +982,135 @@ class MainActivity : ComponentActivity() {
     // (RestartBridgeActivity)를 거치는 방식으로 바꿨다: 지금 포그라운드인 MainActivity가
     // 그 중계를 띄우는 건 제한에 안 걸리고, 중계 액티비티 자신도 막 시작되어 포그라운드
     // 상태이므로 거기서 MainActivity를 다시 띄우는 것도 제한에 안 걸린다.
+    // exit(0)는 onDestroy()를 거치지 않아 디코더가 반납되지 않은 채 프로세스가 죽는다 - 시스템
+    // 코덱 서비스가 뒤처리를 떠안다가 꼬일 여지를 줄이려고 먼저 player.release()로 정상 반납한다.
     private fun restartProcess() {
+        player.release()
         startActivity(
             Intent(this, RestartBridgeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
         Runtime.getRuntime().exit(0)
     }
 
-    // 대상 파일이 로컬에 없으면 서버 /clips/{currentVideo}.mp4에서 다운로드한다. 파일이 이미
-    // 있어도 expectedChecksum이 주어졌는데 로컬 체크섬과 다르면(서버가 같은 파일명으로 다른
-    // 영상을 재배포한 경우) 무조건 재다운로드한다 - expectedChecksum이 없으면(옛 manifest 등)
-    // 예전처럼 "있으면 믿는다"로 동작한다. 결과를 wall/ready(성공) 또는 wall/error(실패)로 보고한다.
-    private fun syncVideoFile(config: MqttControlMessage.DeviceConfig) {
-        val videoPath = config.videoPath
+    // REBOOT_DEVICE - 내 deviceId가 대상에 있을 때만 기기를 재부팅한다. 디코더(시스템 코덱
+    // 서비스)가 고장 나면 앱 재시작으로는 안 풀리고 재부팅해야만 복구되는데, 현장에서 폰을
+    // 찾아 손으로 재부팅하지 않고 대시보드에서 원격으로 하기 위함(2026-09). Device Owner
+    // 권한이 있어야 한다(OTA 무인 설치/Lock Task와 같은 전제). 재부팅 후엔 BootReceiver가 앱을 띄운다.
+    private fun handleRebootDevice(message: MqttControlMessage.RebootDevice) {
+        val myId = mqttManager.deviceId()
+        if (myId !in message.targetDeviceIds) {
+            Log.d(TAG, "REBOOT_DEVICE 수신 - 대상 아님(내 deviceId=$myId)")
+            return
+        }
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(packageName)) {
+            Log.e(TAG, "REBOOT_DEVICE 수신 - Device Owner가 아니라 재부팅할 수 없음")
+            return
+        }
+        Log.d(TAG, "REBOOT_DEVICE 수신 - 기기 재부팅")
+        try {
+            dpm.reboot(ComponentName(this, DeviceAdminReceiver::class.java))
+        } catch (e: Exception) {
+            // 통화 중 등 시스템이 재부팅을 거부하는 경우 - 앱은 그대로 계속 동작한다.
+            Log.e(TAG, "기기 재부팅 실패", e)
+        }
+    }
+
+    // 영상 동기화 요청의 단일 진입점(새 config, CHECK_UPDATE, 재생 오류 복구 모두 여기로 온다).
+    // 같은 대상(파일명+체크섬)의 동기화가 이미 진행 중이면 새 요청은 무시한다. 예전엔 매번
+    // 이전 작업을 cancel()하고 새로 시작했는데, 블로킹 다운로드는 cancel()로 멈추지 않아서
+    // 두 다운로드가 같은 임시 파일에 동시에 썼고, 그동안 재생 중인 플레이어가 옛 영상의
+    // 목차로 미완성 새 파일을 읽어 디코더에 깨진 데이터가 들어갔다 - 배포 후 일부 폰이 초록
+    // 줄무늬/검은 화면이 되고 재부팅해야만 풀리던 원인(2026-09). 대상이 다르면 이전 작업이
+    // 실제로 끝날 때까지 기다린 뒤 시작한다(다운로드 루프가 버퍼마다 취소를 확인한다).
+    // forceReload: 파일이 이미 맞아도 플레이어를 다시 로드한다(재생 오류 복구용).
+    private fun requestVideoSync(config: MqttControlMessage.DeviceConfig, forceReload: Boolean = false) {
+        val target = SyncTarget(config.videoPath, config.currentVideo, config.checksum)
+        if (syncJob?.isActive == true && syncTarget == target) {
+            Log.d(SYNC_TAG, "같은 파일 동기화가 이미 진행 중 - 요청 무시 (${config.currentVideo})")
+            return
+        }
+        val previous = syncJob
+        syncTarget = target
+        syncJob = lifecycleScope.launch {
+            previous?.cancelAndJoin()
+            syncVideoFile(config, forceReload)
+        }
+    }
+
+    // 로컬 파일이 기대 체크섬과 맞으면 그대로 쓰고, 없거나 다르면 서버 /clips/{currentVideo}.mp4에서
+    // 받는다. 받은 파일은 체크섬이 기대값과 일치할 때만 재생 파일 자리로 교체한다 - 예전엔 받기만
+    // 하면 비교 없이 교체+재생해서 깨진 파일도 디코더에 그대로 들어갔다. 기대 체크섬이 없는
+    // config(옛 manifest)는 예전처럼 "받은 대로 믿는다". 결과는 wall/ready(성공) 또는
+    // wall/error(실패)로 보고하고, 실패하면 기존 영상을 그대로 계속 재생한다.
+    // 메인 스레드(lifecycleScope)에서 돌고, 파일 I/O만 IO 디스패처로 넘긴다.
+    private suspend fun syncVideoFile(config: MqttControlMessage.DeviceConfig, forceReload: Boolean) {
         val currentVideo = config.currentVideo
-        syncJob?.cancel()
-        syncJob = lifecycleScope.launch(Dispatchers.IO) {
-            val dest = File(videoPath, "$currentVideo.mp4")
-            val serverIp = readServerIp()
-            val expected = config.checksum?.removePrefix("sha256:")
+        val dest = File(config.videoPath, "$currentVideo.mp4")
+        val expected = config.checksum?.removePrefix("sha256:")
 
-            var checksum: String? = null
-            if (dest.exists()) {
+        val localChecksum = withContext(Dispatchers.IO) { localChecksumOrNull(dest) }
+        if (localChecksum != null && (expected == null || localChecksum == expected)) {
+            // loadedChecksum이 null이면 앱 시작 때 config.json 기준으로 로드한 그 파일이다 - 방금
+            // 디스크에서 확인했으니 다시 로드할 필요 없이 기준값만 채운다(매 시작마다 디코더를
+            // 불필요하게 다시 만들지 않도록).
+            val needsReload = forceReload || player.playerError != null ||
+                dest.path != currentVideoFile.path ||
+                (loadedChecksum != null && loadedChecksum != localChecksum)
+            if (needsReload) loadVideo(dest, localChecksum) else loadedChecksum = localChecksum
+            completeSync(config, localChecksum)
+            return
+        }
+        if (localChecksum != null) Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
+
+        val serverIp = withContext(Dispatchers.IO) { readServerIp() }
+        if (serverIp == null) {
+            Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
+            mqttManager.publishError("DOWNLOAD_FAILED", "serverIp 없음")
+            return
+        }
+
+        val dir = dest.parentFile ?: File(config.videoPath)
+        when (val result = withContext(Dispatchers.IO) { downloadVerified(serverIp, currentVideo, dir, expected) }) {
+            is DownloadResult.Success -> {
                 try {
-                    val localChecksum = sha256Of(dest)
-                    if (expected == null || localChecksum == expected) {
-                        checksum = localChecksum
-                    } else {
-                        Log.d(SYNC_TAG, "로컬 파일 체크섬 불일치 - 재다운로드 - $currentVideo")
+                    // 교체 도중(플레이어 정지~재로드 사이)에 취소되면 플레이어가 멈춘 채로 남으므로
+                    // 이 구간은 취소 불가로 끝까지 실행한다.
+                    val replaced = withContext(NonCancellable) {
+                        replaceAndReload(result.tmpFile, dest, result.checksum)
                     }
-                } catch (e: IOException) {
-                    // 취소해도 downloadOnce()의 블로킹 I/O 도중이면 그 시도가 끝날 때까지는
-                    // 안 멈추므로, 다른 syncVideoFile() 코루틴이 이 순간 다운로드 완료로 같은
-                    // 파일을 rename하고 있으면 여기서 파일이 잠깐 없어 보일 수 있다(실기기에서
-                    // FileNotFoundException으로 앱이 죽는 걸 확인) - 크래시 대신 재다운로드로
-                    // 자연스럽게 복구한다(2026-09).
-                    Log.d(SYNC_TAG, "로컬 파일 읽기 실패(동시 동기화와 겹쳤을 수 있음) - 재다운로드 - $currentVideo", e)
+                    if (replaced) {
+                        completeSync(config, result.checksum)
+                    } else {
+                        mqttManager.publishError("RENAME_FAILED", "$currentVideo.mp4 교체 실패")
+                    }
+                } finally {
+                    result.tmpFile.delete() // 교체됐으면 이미 없는 경로라 아무 일도 안 일어난다
                 }
             }
+            is DownloadResult.ChecksumMismatch -> mqttManager.publishError(
+                "CHECKSUM_MISMATCH",
+                "$currentVideo.mp4 expected=$expected actual=${result.actual}",
+            )
+            DownloadResult.Failed -> mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드 실패")
+        }
+    }
 
-            // 실제로 새로 받았는지를 별도로 기억해둔다 - 같은 파일명이라도 서버가 내용을
-            // 다시 배포한 경우(재인코딩 후 재배포 등)라 applyVideoFile()에서 "경로가 같으니
-            // 이미 로드된 파일"이라고 오판해 재생 중인 옛 소스를 계속 쓰는 문제가 있었다.
-            var didDownload = false
-            if (checksum == null) {
-                checksum = if (serverIp == null) {
-                    Log.e(SYNC_TAG, "serverIp 없음 - $currentVideo 다운로드 불가")
-                    null
-                } else {
-                    downloadWithRetry(serverIp, currentVideo, dest).also { didDownload = it != null }
-                }
-            }
+    // 동기화 성공 처리 - 로컬 config.json 갱신 + wall/ready 보고 + 중복 판단 기준값 갱신.
+    private suspend fun completeSync(config: MqttControlMessage.DeviceConfig, checksum: String) {
+        withContext(Dispatchers.IO) { persistLocalConfig(config.videoPath, config.currentVideo) }
+        mqttManager.publishReady("${config.currentVideo}.mp4", "sha256:$checksum")
+        lastSyncedConfig = config
+        Log.d(SYNC_TAG, "동기화 완료 - ${config.currentVideo} (checksum=$checksum)")
+    }
 
-            if (checksum != null) {
-                persistLocalConfig(videoPath, currentVideo)
-                mqttManager.publishReady("$currentVideo.mp4", "sha256:$checksum")
-                Log.d(SYNC_TAG, "동기화 완료 - $currentVideo (checksum=$checksum)")
-                lastSyncedConfig = config
-                withContext(Dispatchers.Main) { applyVideoFile(dest, forceReload = didDownload) }
-            } else {
-                mqttManager.publishError("DOWNLOAD_FAILED", "$currentVideo.mp4 다운로드/검증 실패")
-            }
+    private fun localChecksumOrNull(file: File): String? {
+        if (!file.exists()) return null
+        return try {
+            sha256Of(file)
+        } catch (e: IOException) {
+            Log.d(SYNC_TAG, "로컬 파일 읽기 실패 - 재다운로드 - ${file.path}", e)
+            null
         }
     }
 
@@ -1006,34 +1128,77 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 새로 동기화된 파일이 지금 로드된 것과 다르면 ExoPlayer의 소스를 교체한다.
-    // forceReload=true(syncVideoFile()이 실제로 재다운로드한 경우)면 경로가 같아도 재로드한다 -
-    // 서버가 같은 파일명으로 내용만 바꿔 재배포한 경우(재인코딩 후 재배포 등) ExoPlayer가 이미
-    // 열어둔 옛 파일 핸들을 계속 쓰는 바람에 앱을 재시작해야만 새 영상이 반영되던 문제가 있었다.
-    //
-    // 재생 중이어도 곧바로 교체한다 - 예전엔 439대 동기화가 깨질까봐 STOP/모드전환 때까지
-    // 보류했었는데, 이 설치는 사실상 24시간 연속 재생이라 STOP이 올 일이 없어 보류된 교체가
-    // 영영 적용되지 못하고 앱 재시작이 강제되는 문제가 있었다. 실제로는 보류가 불필요하다 -
-    // setMediaItem() 직후 currentPosition이 0으로 리셋돼도, DriftCorrector.kt가 매 UDP
-    // 패킷(33ms 간격)마다 오차를 감지해서 200ms 초과 시 즉시 seekTo(targetPos)로 맞춰주므로
-    // 다음 패킷 안에 자동으로 재동기화된다. 교체 순간 그 폰만 잠깐(길어야 수백ms) 멈칫할 수
-    // 있지만, 폰마다 다운로드 완료 시점이 달라 이 멈칫함도 분산되고, 439대 동시 재시작(전체
-    // 검은 화면)보다 훨씬 덜 disruptive하다. 반드시 메인 스레드에서 호출.
-    private fun applyVideoFile(dest: File, forceReload: Boolean = false) {
-        if (!forceReload && dest.path == currentVideoFile.path) return
+    // 검증이 끝난 임시 파일을 dest로 교체하고 플레이어에 다시 로드한다. 반드시 메인 스레드.
+    // 지금 재생 중인 파일 자체를 덮어쓰는 경우(같은 파일명 재배포)엔 교체 전에 플레이어를 먼저
+    // 멈춘다 - ExoPlayer는 seek/반복 재생 때 파일을 경로로 다시 여는데, 교체와 재로드 사이에
+    // 그게 일어나면 옛 영상의 목차로 새 파일의 바이트를 읽어 디코더에 깨진 데이터가 들어간다.
+    // stop()은 내부 재생 스레드에서 비동기로 처리되므로 잠깐 기다린 뒤 교체한다.
+    // 교체에 실패하면 dest의 옛 파일은 그대로이므로 플레이어를 다시 준비시켜 이어서 재생한다.
+    private suspend fun replaceAndReload(tmp: File, dest: File, checksum: String): Boolean {
+        val replacingLoaded = dest.path == currentVideoFile.path
+        if (replacingLoaded) {
+            player.stop()
+            delay(PLAYER_STOP_SETTLE_MS)
+        }
 
-        currentVideoFile = dest
-        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(dest)))
-        player.prepare()
-        if (playbackStarted) player.play()
-        Log.d(SYNC_TAG, "재생 파일 교체 완료 - ${dest.path}")
+        if (!tmp.renameTo(dest)) {
+            Log.e(SYNC_TAG, "파일 교체 실패 - ${tmp.path} -> ${dest.path}")
+            if (replacingLoaded) {
+                player.prepare()
+                if (playbackStarted) player.play()
+            }
+            return false
+        }
+
+        loadVideo(dest, checksum)
+        return true
     }
 
-    // 실패(네트워크 오류/타임아웃) 시 지수 백오프로 재시도한다 - OTA의 downloadWithRetry와 동일한 방식.
-    private suspend fun downloadWithRetry(serverIp: String, currentVideo: String, dest: File): String? {
-        repeat(MAX_DOWNLOAD_RETRIES) { attempt ->
-            val checksum = downloadOnce(serverIp, currentVideo, dest)
-            if (checksum != null) return checksum
+    // 플레이어에 파일을 로드한다. 반드시 메인 스레드.
+    // 재생 중이어도 곧바로 교체한다 - 예전엔 439대 동기화가 깨질까봐 STOP/모드전환 때까지
+    // 보류했었는데, 이 설치는 사실상 24시간 연속 재생이라 STOP이 올 일이 없어 보류된 교체가
+    // 영영 적용되지 못하고 앱 재시작이 강제되는 문제가 있었다. setMediaItem() 직후
+    // currentPosition이 0으로 리셋돼도 DriftCorrector가 매 UDP 패킷마다 오차를 감지해서
+    // 200ms 초과 시 seekTo(targetPos)로 맞춰주므로 곧바로 재동기화된다.
+    private fun loadVideo(file: File, checksum: String) {
+        currentVideoFile = file
+        loadedChecksum = checksum
+        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+        player.prepare()
+        if (playbackStarted) player.play()
+        Log.d(SYNC_TAG, "재생 파일 로드 - ${file.path}")
+    }
+
+    // 실패(네트워크 오류/타임아웃) 시 지수 백오프로 재시도하고, 받은 파일의 체크섬이 기대값과
+    // 다르면 그 파일은 버리고 다시 받는다(OTA의 UpdateManager.downloadWithRetry와 같은 방식).
+    // 체크섬 불일치는 MAX_CHECKSUM_MISMATCH_RETRIES번까지만 다시 받는다 - 서버 파일 자체가
+    // manifest와 다른 경우라면 몇 번을 받아도 같으므로, 439대가 40~50MB를 반복해서 받는 걸 막는다.
+    private suspend fun downloadVerified(
+        serverIp: String,
+        currentVideo: String,
+        dir: File,
+        expected: String?,
+    ): DownloadResult {
+        dir.mkdirs()
+        // 이전 시도(취소/크래시)가 남긴 임시 파일 정리 - requestVideoSync()가 이전 작업이 끝난
+        // 뒤에만 여기로 오므로, 지금 이 폴더에 쓰고 있는 다른 다운로드는 없다.
+        dir.listFiles { f -> f.name.endsWith(".download") }?.forEach { it.delete() }
+
+        var mismatchCount = 0
+        var lastMismatch: String? = null
+        for (attempt in 0 until MAX_DOWNLOAD_RETRIES) {
+            val downloaded = downloadOnce(serverIp, currentVideo, dir)
+            if (downloaded != null) {
+                val (tmpFile, checksum) = downloaded
+                if (expected == null || checksum == expected) return DownloadResult.Success(tmpFile, checksum)
+
+                tmpFile.delete()
+                mismatchCount += 1
+                lastMismatch = checksum
+                Log.e(SYNC_TAG, "받은 파일 체크섬 불일치 - expected=$expected actual=$checksum "
+                    + "($currentVideo, 시도 ${attempt + 1}/$MAX_DOWNLOAD_RETRIES)")
+                if (mismatchCount >= MAX_CHECKSUM_MISMATCH_RETRIES) break
+            }
 
             if (attempt < MAX_DOWNLOAD_RETRIES - 1) {
                 val backoffMs = DOWNLOAD_BASE_BACKOFF_MS * (1L shl attempt)
@@ -1041,15 +1206,17 @@ class MainActivity : ComponentActivity() {
                 delay(backoffMs)
             }
         }
-        return null
+        return lastMismatch?.let { DownloadResult.ChecksumMismatch(it) } ?: DownloadResult.Failed
     }
 
-    // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 임시 파일에 받은 뒤
-    // 완료되면 최종 경로로 옮겨서, 다운로드 도중 실패해도 손상된 파일이 dest에 남지 않게 한다.
-    private fun downloadOnce(serverIp: String, currentVideo: String, dest: File): String? {
-        val tmpFile = File(dest.parentFile, "${dest.name}.download")
+    // 서버에서 영상을 스트리밍 다운로드하며 SHA-256을 함께 계산한다. 시도마다 이름이 다른 임시
+    // 파일에 받고, 성공하면 (임시 파일, 체크섬)을 돌려준다 - 재생 파일 자리로의 교체는 체크섬
+    // 확인 뒤 replaceAndReload()가 한다. 버퍼마다 취소를 확인해서 cancel()이 실제로 먹히게 한다.
+    private suspend fun downloadOnce(serverIp: String, currentVideo: String, dir: File): Pair<File, String>? {
+        val tmpFile = File(dir, "$currentVideo.mp4.${System.currentTimeMillis()}.download")
         var connection: HttpURLConnection? = null
-        return try {
+        var success = false
+        try {
             val url = URL("http://$serverIp:$SERVER_PORT/clips/$currentVideo.mp4")
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
@@ -1062,12 +1229,12 @@ class MainActivity : ComponentActivity() {
                 return null
             }
 
-            dest.parentFile?.mkdirs()
             val digest = MessageDigest.getInstance("SHA-256")
             connection.inputStream.use { input ->
                 tmpFile.outputStream().use { output ->
                     val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
                     while (true) {
+                        currentCoroutineContext().ensureActive()
                         val read = input.read(buffer)
                         if (read == -1) break
                         digest.update(buffer, 0, read)
@@ -1075,13 +1242,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            tmpFile.renameTo(dest)
-            digest.digest().joinToString("") { "%02x".format(it) }
+            success = true
+            return tmpFile to digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(SYNC_TAG, "다운로드 실패 - $currentVideo", e)
-            tmpFile.delete()
-            null
+            return null
         } finally {
+            if (!success) tmpFile.delete()
             connection?.disconnect()
         }
     }

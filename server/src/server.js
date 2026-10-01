@@ -261,6 +261,10 @@ const deviceVersion = {};
 // deviceId(문자열) -> heartbeat에 실려온 배터리 상태 { pct, charging }. 오프라인이 된 뒤에도
 // "마지막으로 확인된 값"으로 남겨둔다 - 꺼지기 직전 상태 파악에 도움이 된다.
 const deviceBattery = {};
+// deviceId(문자열) -> heartbeat에 실려온 재생 오류 코드(ExoPlayer errorCodeName). 오류가 없으면
+// 항목 자체가 없다. 폰이 재생을 회복하면 heartbeat에서 빠지므로 다음 heartbeat에 같이 지워진다.
+// 디코더가 오류 없이 깨진 화면만 내보내는 경우는 폰도 모르므로 여기 안 잡힌다.
+const devicePlayerError = {};
 
 function isDeviceOnline(deviceId) {
   const lastSeen = deviceLastSeen[deviceId];
@@ -553,10 +557,30 @@ function finishDeployRun(run) {
     + `시간초과 ${c.timeout} / config없음 ${c.skipped} (대상 ${run.total}대)`,
   );
   deployTimer(run, () => {
-    publishControl({ type: 'CHECK_UPDATE' }, { retain: false });
-    console.log('[MQTT] 배포 완료 - CHECK_UPDATE 재검증 브로드캐스트');
+    // 이미 새 파일이 확인된 폰까지 깨울 필요는 없다 - 아직 정상이 아닌 온라인 폰에만 보낸다
+    // (오프라인 폰은 재접속 시 retain된 config로 알아서 다시 받는다). targetDeviceIds를 모르는
+    // 옛 APK는 이 필드를 무시하고 전체 대상으로 처리하므로 예전 동작과 같다.
+    const targets = manifest
+      ? manifest.devices
+        .map((device) => String(device.deviceId))
+        .filter((id) => isDeviceOnline(id) && computeFileStatus(id) !== 'ok')
+        .map(Number)
+      : [];
+    if (targets.length > 0) {
+      publishControl({ type: 'CHECK_UPDATE', targetDeviceIds: targets }, { retain: false });
+      console.log(`[MQTT] 배포 완료 - 미완료 ${targets.length}대에 CHECK_UPDATE 재검증 요청 (${targets.join(',')})`);
+    } else {
+      console.log('[MQTT] 배포 완료 - 온라인 폰 전부 정상, CHECK_UPDATE 생략');
+    }
     if (deployRun === run) deployRun = null;
   }, DEPLOY_CHECK_UPDATE_DELAY_MS);
+}
+
+// 배포가 진행 중이면(config 발행 시작 ~ 배포 완료 후 CHECK_UPDATE 발송까지) 영상 재생을 막는다 -
+// 그 사이엔 폰마다 옛 영상/새 영상이 섞여 있어 재생하면 구체 전체가 어긋난 화면이 되고, 재생 중
+// 파일 교체도 줄일 수 있다. 대시보드 버튼뿐 아니라 업체 PLAY_TRIGGER도 같은 기준으로 막는다.
+function isDeployBlockingPlay() {
+  return deployRun !== null;
 }
 
 // manifest의 폰별 config.json을 발행한다. 다운로드가 필요한 폰(온라인이면서 아직 새 파일이
@@ -571,6 +595,12 @@ function publishDeviceConfigs() {
   if (deployRun) {
     console.log('[MQTT] 진행 중이던 배포를 취소하고 새 배포로 교체');
     cancelDeployRun();
+  }
+
+  // 배포 중엔 재생을 막으므로(isDeployBlockingPlay), 이미 재생 중이던 영상도 여기서 멈춘다.
+  if (state.isPlaying) {
+    stopVideoPlayback();
+    console.log('[MQTT] 배포 시작 - 재생 중이던 영상 정지');
   }
 
   const queue = [];
@@ -739,6 +769,11 @@ mqttClient.on('message', (topic, payload) => {
       if (typeof msg.batteryPct === 'number' && typeof msg.charging === 'boolean') {
         deviceBattery[statusMatch[1]] = { pct: msg.batteryPct, charging: msg.charging };
       }
+      if (typeof msg.playerError === 'string') {
+        devicePlayerError[statusMatch[1]] = msg.playerError;
+      } else {
+        delete devicePlayerError[statusMatch[1]];
+      }
     } catch (err) {
       // 구버전 앱은 versionCode/배터리 필드를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
     }
@@ -880,14 +915,21 @@ async function scheduleReturnFromOneShotPlay(previousMode) {
 
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
 app.post('/api/play', (req, res) => {
+  if (isDeployBlockingPlay()) {
+    console.log('[HTTP] 재생 요청 거부 - 영상 배포 진행 중');
+    res.status(409).json({ success: false, error: '영상 배포 중에는 재생할 수 없습니다.' });
+    return;
+  }
+
   const startAt = triggerPlay();
 
   console.log(`[HTTP] 재생 시작 - startAt=${startAt}`);
   res.json({ success: true, state });
 });
 
-// 재생 정지: isPlaying = false, 정지 시점의 elapsedMs를 고정해둔다. MQTT로 STOP 명령도 함께 발행한다.
-app.post('/api/stop', (req, res) => {
+// isPlaying = false, 정지 시점의 elapsedMs를 고정해두고 MQTT STOP을 발행한다.
+// /api/stop과 배포 시작(publishDeviceConfigs)이 공유한다.
+function stopVideoPlayback() {
   if (state.isPlaying) {
     state.stoppedElapsedMs = Math.max(0, Date.now() - state.startAt);
   }
@@ -896,6 +938,11 @@ app.post('/api/stop', (req, res) => {
   // elapsedMs를 함께 실어 보낸다 - retain된 STOP을 나중에 받는 폰도
   // 정지된 위치(elapsedMs % duration)로 seek해서 다른 폰들과 같은 프레임을 보여줄 수 있게 한다.
   publishControl({ type: 'STOP', elapsedMs: state.stoppedElapsedMs });
+}
+
+// 재생 정지: isPlaying = false, 정지 시점의 elapsedMs를 고정해둔다. MQTT로 STOP 명령도 함께 발행한다.
+app.post('/api/stop', (req, res) => {
+  stopVideoPlayback();
 
   console.log(`[HTTP] 재생 정지 - stoppedElapsedMs=${state.stoppedElapsedMs}`);
   res.json({ success: true, state });
@@ -1446,6 +1493,25 @@ app.post('/api/restart-app', (req, res) => {
   res.json({ ok: true, targetDeviceIds: targetDeviceIds || null });
 });
 
+// 기기 재부팅 - 디코더(시스템 코덱 서비스)가 고장 나 앱 재시작으론 안 풀리는 화면 깨짐을
+// 원격으로 복구하는 용도(폰은 Device Owner 권한으로 DevicePolicyManager.reboot() 호출).
+// 실수로 전체를 재부팅하지 않도록 targetDeviceIds를 필수로 받는다. retain하면 재부팅 후
+// 재접속하자마자 또 재부팅하는 무한 루프가 되므로 반드시 retain: false.
+app.post('/api/reboot-device', (req, res) => {
+  const { targetDeviceIds } = req.body || {};
+  const valid = Array.isArray(targetDeviceIds) && targetDeviceIds.length > 0
+    && targetDeviceIds.every((id) => Number.isInteger(id) && id > 0);
+  if (!valid) {
+    res.status(400).json({ ok: false, error: 'targetDeviceIds(양의 정수 배열, 1개 이상)가 필요합니다.' });
+    return;
+  }
+
+  publishControl({ type: 'REBOOT_DEVICE', targetDeviceIds }, { retain: false });
+
+  console.log(`[HTTP] 기기 재부팅 요청 - 대상 ${targetDeviceIds.length}대(${targetDeviceIds.join(',')})`);
+  res.json({ ok: true, targetDeviceIds });
+});
+
 // 스트레스 컬러 오버레이 전환. stress 또는 color 중 하나는 필수, 둘 다 오면 color 우선.
 // startAt = 지금 + leadTime(기본 2000ms)으로 잡아 네트워크/MQTT 전파 지연을 흡수한다.
 app.post('/api/color-change', (req, res) => {
@@ -1902,6 +1968,12 @@ playbackWss.on('connection', (ws) => {
     }
 
     if (msg.type === 'PLAY_TRIGGER') {
+      if (isDeployBlockingPlay()) {
+        console.log('[WS] PLAY_TRIGGER 거부 - 영상 배포 진행 중');
+        ws.send(JSON.stringify({ type: 'ERROR', message: '영상 배포 중이라 재생할 수 없습니다.' }));
+        return;
+      }
+
       const previousMode = state.currentMode;
       const startAt = triggerPlay();
       console.log(`[WS] PLAY_TRIGGER 수신 - startAt=${startAt}`);
@@ -1940,6 +2012,10 @@ function buildStatusPayload() {
   const otaStatus = {};
   const versions = {};
   const battery = {};
+  // 불일치 폰만 사유를 싣는다(대시보드 셀 툴팁용). wall/error 보고면 그 사유(DOWNLOAD_FAILED,
+  // CHECKSUM_MISMATCH 등), wall/ready인데 체크섬이 다르면 OLD_FILE(옛 영상을 들고 있음).
+  const fileReason = {};
+  const playerError = {};
   let online = 0;
 
   for (let id = 1; id <= TOTAL_DEVICES; id += 1) {
@@ -1947,9 +2023,13 @@ function buildStatusPayload() {
     devices[id] = status;
     if (status === 'online') online += 1;
     fileStatus[id] = computeFileStatus(id);
+    if (fileStatus[id] === 'mismatch') {
+      fileReason[id] = deviceFileState[id].reason || 'OLD_FILE';
+    }
     otaStatus[id] = computeOtaStatus(id);
     if (typeof deviceVersion[id] === 'number') versions[id] = deviceVersion[id];
     if (deviceBattery[id]) battery[id] = deviceBattery[id];
+    if (status === 'online' && devicePlayerError[id]) playerError[id] = devicePlayerError[id];
   }
 
   const appVersion = readAppVersion();
@@ -1960,6 +2040,8 @@ function buildStatusPayload() {
     total: TOTAL_DEVICES,
     devices,
     fileStatus,
+    fileReason,
+    playerError,
     otaStatus,
     versions,
     battery,

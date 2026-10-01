@@ -516,6 +516,29 @@ main {
   border-radius: 50%;
 }
 
+/* 재생 오류(폰이 heartbeat로 보고) - 좌측 상단 빨간 점. 배터리 점(::after, 우측 하단)과 안 겹친다. */
+.device-cell.player-error::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
+.player-error-count.has-error {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.play-blocked-note {
+  align-self: center;
+  color: #f0b429;
+  font-size: 13px;
+}
+
 .device-cell.battery-not-charging::after {
   background: #a855f7;
 }

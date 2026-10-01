@@ -12,6 +12,7 @@
     <div class="header-info">
       <span id="online-count">온라인: 000 / 000</span>
       <span id="file-status-count" class="file-status-count">파일: 정상 0 / 불일치 0 / 무응답 0</span>
+      <span id="player-error-count" class="file-status-count player-error-count">재생오류 0</span>
       <span id="battery-status-count" class="file-status-count">배터리: 정상 0 / 낮음 0 / 미충전 0 / 확인불가 0</span>
       <span id="deploy-progress" class="file-status-count deploy-progress" hidden>
         <span id="deploy-progress-text"></span>
@@ -42,6 +43,7 @@
     <div id="video-controls" class="control-group">
       <button id="btn-play" class="btn btn-play">영상 재생</button>
       <button id="btn-stop" class="btn btn-stop">영상 정지</button>
+      <span id="play-blocked-note" class="play-blocked-note" hidden>영상 배포 중에는 재생할 수 없습니다</span>
     </div>
 
     <div id="pattern-controls" class="control-group pattern-controls" hidden>
@@ -159,11 +161,12 @@
   </section>
 
   <section class="admin-section">
-    <h2>앱 재시작</h2>
+    <h2>앱 재시작 / 기기 재부팅</h2>
     <div class="admin-restart">
       <input id="restart-device-ids" type="text" placeholder="deviceId 쉼표 구분 (예: 1,2,3) - 비우면 아래 전체 버튼만" />
       <button id="btn-restart-selected" class="btn-small">선택 재시작</button>
       <button id="btn-restart-all" class="btn-small btn-danger">전체 재시작</button>
+      <button id="btn-reboot-selected" class="btn-small btn-danger" title="앱 재시작으로 안 풀리는 화면 깨짐(디코더 고장)용 - 폰 자체를 재부팅합니다">선택 재부팅</button>
     </div>
   </section>
 

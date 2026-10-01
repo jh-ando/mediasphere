@@ -55,11 +55,17 @@ sealed class MqttControlMessage {
     // elapsedMs: 정지된 위치(ms). retain된 STOP을 나중에 받는 폰도 같은 프레임으로 seek할 수 있게 한다.
     data class Stop(val elapsedMs: Long) : MqttControlMessage()
     data class Load(val video: String) : MqttControlMessage()
-    object CheckUpdate : MqttControlMessage()
+    // 파일 상태 재검증 요청 - targetDeviceIds가 없으면 전체, 있으면 그 deviceId만(서버가 배포 후
+    // 아직 새 파일이 확인 안 된 폰에만 보낸다).
+    data class CheckUpdate(val targetDeviceIds: List<Int>?) : MqttControlMessage()
 
     // 앱 재시작(Activity recreate) - targetDeviceIds가 없으면 전체 대상, 있으면 그 deviceId만
     // (SEQUENCE_START와 같은 패턴: 브로드캐스트로 받고 폰이 자기 deviceId로 스스로 필터링).
     data class RestartApp(val targetDeviceIds: List<Int>?) : MqttControlMessage()
+
+    // 기기 재부팅 - 서버가 대상을 반드시 지정한다(전체 재부팅 없음). 디코더(시스템 코덱 서비스)가
+    // 고장 나 앱 재시작으로 안 풀리는 화면 깨짐을 원격으로 복구하는 용도.
+    data class RebootDevice(val targetDeviceIds: List<Int>) : MqttControlMessage()
 
     // 영상 모드 / 패턴 모드 / 텍스트 스크롤 모드 전환 (셋은 상호 배타적)
     object ModeVideo : MqttControlMessage()
@@ -197,6 +203,12 @@ class MqttManager(
     private var patternCellTopic: String = ""
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // 재생 오류 코드(ExoPlayer errorCodeName) - null이 아니면 heartbeat에 실어 서버에 알린다.
+    // MainActivity가 onPlayerError에서 세팅하고 재생이 회복되면(STATE_READY) null로 지운다.
+    // heartbeat는 IO 스레드에서 읽으므로 @Volatile.
+    @Volatile
+    var playerError: String? = null
 
     // heartbeat에서 쓰는 것과 동일한 deviceId를 다른 곳(순차 점멸 등)에서도 재사용할 때 쓴다.
     fun deviceId(): Int = deviceId
@@ -382,15 +394,9 @@ class MqttManager(
                 "PLAY" -> MqttControlMessage.Play(startAt = json.getLong("startAt"))
                 "STOP" -> MqttControlMessage.Stop(elapsedMs = json.optLong("elapsedMs", 0L))
                 "LOAD" -> MqttControlMessage.Load(video = json.optString("video"))
-                "CHECK_UPDATE" -> MqttControlMessage.CheckUpdate
-                "RESTART_APP" -> MqttControlMessage.RestartApp(
-                    targetDeviceIds = if (json.has("targetDeviceIds")) {
-                        val arr = json.getJSONArray("targetDeviceIds")
-                        (0 until arr.length()).map { arr.getInt(it) }
-                    } else {
-                        null
-                    },
-                )
+                "CHECK_UPDATE" -> MqttControlMessage.CheckUpdate(parseTargetDeviceIds(json))
+                "RESTART_APP" -> MqttControlMessage.RestartApp(parseTargetDeviceIds(json))
+                "REBOOT_DEVICE" -> parseTargetDeviceIds(json)?.let { MqttControlMessage.RebootDevice(it) }
                 "MODE_VIDEO" -> MqttControlMessage.ModeVideo
                 "MODE_PATTERN" -> MqttControlMessage.ModePattern
                 "MODE_TEXT" -> MqttControlMessage.ModeText
@@ -454,6 +460,13 @@ class MqttManager(
             Log.e(TAG, "메시지 파싱 실패: $payload", e)
             null
         }
+    }
+
+    // targetDeviceIds 필드가 없으면 null(전체 대상), 있으면 정수 목록.
+    private fun parseTargetDeviceIds(json: JSONObject): List<Int>? {
+        if (!json.has("targetDeviceIds")) return null
+        val arr = json.getJSONArray("targetDeviceIds")
+        return (0 until arr.length()).map { arr.getInt(it) }
     }
 
     // wall/state/color(retain) 전용 파서 - 빈 payload는 삭제(clear)를 의미한다.
@@ -583,6 +596,7 @@ class MqttManager(
             val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
             put("batteryPct", batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
             put("charging", batteryManager.isCharging)
+            playerError?.let { put("playerError", it) }
         }.toString()
 
         try {

@@ -3,6 +3,8 @@ const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "낮음"으로 
 
 const onlineCountEl = document.getElementById('online-count');
 const fileStatusCountEl = document.getElementById('file-status-count');
+const playerErrorCountEl = document.getElementById('player-error-count');
+const playBlockedNoteEl = document.getElementById('play-blocked-note');
 const batteryStatusCountEl = document.getElementById('battery-status-count');
 const deployProgressEl = document.getElementById('deploy-progress');
 const deployProgressTextEl = document.getElementById('deploy-progress-text');
@@ -56,6 +58,15 @@ const btnTextStop = document.getElementById('btn-text-stop');
 const restartDeviceIdsEl = document.getElementById('restart-device-ids');
 const btnRestartSelected = document.getElementById('btn-restart-selected');
 const btnRestartAll = document.getElementById('btn-restart-all');
+const btnRebootSelected = document.getElementById('btn-reboot-selected');
+
+// 불일치 셀 툴팁에 보여줄 사유 - 서버 fileReason 값(폰 wall/error 사유 또는 OLD_FILE)
+const FILE_REASON_LABEL = {
+  OLD_FILE: '옛 영상 파일',
+  DOWNLOAD_FAILED: '다운로드 실패',
+  CHECKSUM_MISMATCH: '체크섬 불일치(서버 파일 확인 필요)',
+  RENAME_FAILED: '파일 교체 실패',
+};
 
 const vrFileEl = document.getElementById('vr-file');
 const btnVrStart = document.getElementById('btn-vr-start');
@@ -118,7 +129,10 @@ function applyStatusUpdate(data) {
 
   const offlineIds = [];
   const fileStatus = data.fileStatus || {};
+  const fileReason = data.fileReason || {};
   const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
+  const playerError = data.playerError || {};
+  let playerErrorCount = 0;
   const otaStatus = data.otaStatus || {};
   const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
   const versions = data.versions || {};
@@ -163,10 +177,22 @@ function applyStatusUpdate(data) {
     const b = battery[id];
     const batteryKey = !b ? 'unknown' : !b.charging ? 'notCharging' : b.pct < LOW_BATTERY_PCT ? 'low' : 'ok';
     batteryCounts[batteryKey] += 1;
+    const pError = playerError[id];
+    if (pError) playerErrorCount += 1;
+
     if (cell) {
       cell.classList.toggle('battery-not-charging', batteryKey === 'notCharging');
       cell.classList.toggle('battery-low', batteryKey === 'low');
-      cell.title = b ? `#${id} - 배터리 ${b.pct}% (${b.charging ? '충전 중' : '미충전'})` : `#${id}`;
+      cell.classList.toggle('player-error', Boolean(pError));
+
+      const tips = [`#${id}`];
+      if (b) tips.push(`배터리 ${b.pct}% (${b.charging ? '충전 중' : '미충전'})`);
+      if (fStatus === 'mismatch') {
+        const reason = fileReason[id];
+        tips.push(`파일 불일치 - ${FILE_REASON_LABEL[reason] || reason || '사유 없음'}`);
+      }
+      if (pError) tips.push(`재생 오류 - ${pError}`);
+      cell.title = tips.join('\n');
     }
 
     if (status === 'offline') offlineIds.push(id);
@@ -178,8 +204,14 @@ function applyStatusUpdate(data) {
 
   // 영상 배포는 동시 다운로드 수를 제한해 순차로 나가서 몇 분~수십 분 걸린다("영상 교체"
   // 패널은 발행 시작 시점에 done으로 넘어가므로) - 진행 중일 때만 진행률을 보여준다.
+  playerErrorCountEl.textContent = `재생오류 ${playerErrorCount}`;
+  playerErrorCountEl.classList.toggle('has-error', playerErrorCount > 0);
+
   const deploy = data.deploy;
   deployProgressEl.hidden = !deploy;
+  // 서버도 배포 중엔 /api/play를 거부한다(업체 PLAY_TRIGGER 포함) - 버튼은 그 상태를 보여주는 것뿐.
+  btnPlay.disabled = Boolean(deploy);
+  playBlockedNoteEl.hidden = !deploy;
   if (deploy) {
     const c = deploy.counts;
     deployProgressTextEl.textContent = deploy.finished
@@ -333,7 +365,9 @@ function connect() {
 }
 
 btnPlay.addEventListener('click', () => {
-  fetch('/api/play', { method: 'POST' }).catch((err) => console.error('[HTTP] PLAY 요청 실패', err));
+  fetch('/api/play', { method: 'POST' })
+    .then((res) => (res.ok ? null : res.json().then((body) => window.alert(body.error || '재생 요청 실패'))))
+    .catch((err) => console.error('[HTTP] PLAY 요청 실패', err));
 });
 
 btnStop.addEventListener('click', () => {
@@ -468,6 +502,23 @@ btnRestartAll.addEventListener('click', () => {
 
   fetch('/api/restart-app', { method: 'POST' })
     .catch((err) => console.error('[HTTP] 앱 재시작(전체) 요청 실패', err));
+});
+
+// 재부팅은 전체 버튼이 없다 - 서버도 targetDeviceIds를 필수로 받는다.
+btnRebootSelected.addEventListener('click', () => {
+  const ids = parseDeviceIds(restartDeviceIdsEl.value);
+  if (ids === undefined) {
+    window.alert('deviceId는 쉼표로 구분된 양의 정수로 입력하세요 (예: 1,2,3)');
+    return;
+  }
+  if (ids === null) {
+    window.alert('재부팅할 deviceId를 입력하세요');
+    return;
+  }
+  if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재부팅할까요? 폰이 다시 켜질 때까지 1~2분 걸립니다.`)) return;
+
+  postJson('/api/reboot-device', { targetDeviceIds: ids })
+    .catch((err) => console.error('[HTTP] 기기 재부팅 요청 실패', err));
 });
 
 // ── 영상 교체 ──────────────────────────────────────────
