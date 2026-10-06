@@ -214,7 +214,7 @@ MediaSphere/
                  진행 중인 페이드 취소 (마지막 상태 유지, PATTERN_STOP과 동일 관례)
 
 ## HTTP API 엔드포인트
-- POST /api/play           (영상 배포 진행 중이면 409 거부 - 업체 PLAY_TRIGGER도 ERROR로 거부)
+- POST /api/play           (영상 교체·배포 진행 중이면 409 거부 - 업체 PLAY_TRIGGER도 ERROR로 거부)
 - POST /api/stop
 - POST /api/distribute/publish  manifest 재로드 후 폰별 config 배포(동시 다운로드 20대 제한,
                  시작 시 재생 중인 영상 정지, 완료까지 재생 차단)
@@ -223,7 +223,12 @@ MediaSphere/
 - POST /api/mode           {"mode":"video"|"pattern"|"text"}
                  무언가 실행 중(영상 재생/재생목록/텍스트 패턴/텍스트 스크롤/점멸/순차 점멸)이면
                  409 거부 - 먼저 정지해야 함. 대시보드 모드 탭도 같이 비활성화된다.
-- POST /api/idle           절전 모드(패턴 모드 + 검은 화면). 실행 중이면 409 거부
+                 영상 교체·배포 진행 중에도 409 거부.
+- POST /api/idle           절전 모드(패턴 모드 + 검은 화면). 실행 중이거나 영상 교체·배포 중이면 409 거부
+- POST /api/video/replace  원본 영상 업로드 → 타일 계산·인코딩·발행(multipart). 영상 모드에서만 허용
+                 (아니면 409), 시작 시 재생 중인 영상 정지. 진행률은 STATUS_UPDATE의 videoReplace
+                 (인코딩 [n/total] 로그로 encodeDone/encodeTotal/etaMs 계산)
+- POST /api/video/replace/cancel 진행 중인 영상 교체 취소
 - GET/POST /api/schedule   운영 시간 타이머 {"enabled","start":"HH:MM","end":"HH:MM","closedDays":[0~6]}
                  (data/schedule.json 저장, 서버 현지 시각 기준). 운영 시간 경계에서만 동작 -
                  시작: 전부 정지 후 영상 재생(배포 중이면 끝난 뒤), 종료: 전부 정지 후 절전.

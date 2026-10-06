@@ -1,269 +1,338 @@
 const RECONNECT_DELAY_MS = 3000;
-const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "낮음"으로 표시 (미충전은 별도 버킷)
+const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "배터리 낮음" (충전 안 됨은 별도)
+// 랜덤(지정색)의 최소 밝기 - 폰 MainActivity.RANDOM_MIN_VALUE와 같은 값이어야 한다.
+const RANDOM_SHADE_MIN_BRIGHTNESS = 0.3;
+// 인코딩 남은 시간은 서버가 이 개수 이상 끝난 뒤부터 보낸다(server.js ENCODE_ETA_MIN_DONE)
+const TOAST_MS = 2800;
 
-const onlineCountEl = document.getElementById('online-count');
-const fileStatusCountEl = document.getElementById('file-status-count');
-const playerErrorCountEl = document.getElementById('player-error-count');
-const playBlockedNoteEl = document.getElementById('play-blocked-note');
-const modeLockedNoteEl = document.getElementById('mode-locked-note');
-const scheduleBadgeEl = document.getElementById('schedule-badge');
-const scheduleEnabledEl = document.getElementById('schedule-enabled');
-const scheduleStartEl = document.getElementById('schedule-start');
-const scheduleEndEl = document.getElementById('schedule-end');
-const scheduleDayEls = [...document.querySelectorAll('#schedule-closed-days input[data-day]')];
-const btnScheduleSave = document.getElementById('btn-schedule-save');
-const scheduleStatusEl = document.getElementById('schedule-status');
+const $ = (id) => document.getElementById(id);
+const $$ = (sel) => [...document.querySelectorAll(sel)];
 
-// 서버 STATUS_UPDATE.running 값 -> 화면 표시 이름
+// ── 요소
+const serverTimeEl = $('server-time');
+const btnShowId = $('btn-show-id');
+const nowDotEl = $('now-dot');
+const nowTitleEl = $('now-title');
+const nowSubEl = $('now-sub');
+const onlineEl = $('online');
+const schedLineEl = $('sched-line');
+const modeTabs = $$('.tabs .tab');
+const modeLockedNoteEl = $('mode-locked-note');
+const panels = $$('[data-panel]');
+
+const tgVideo = $('tg-video');
+const rsVideo = $('rs-video');
+const videoNoteEl = $('video-note');
+
+const kindBtns = $$('#kinds .kind');
+const wayBtns = $$('#ways .way');
+const ptBlinkEl = $('pt-blink');
+const ptPlaylistEl = $('pt-playlist');
+const patternColorEl = $('pattern-color');
+const patternColorModeEl = $('pattern-color-mode');
+const patternSaturationWrap = $('pattern-saturation-wrap');
+const patternColorSaturationEl = $('pattern-color-saturation');
+const patternIntervalEl = $('pattern-interval');
+const patternDurationEl = $('pattern-duration');
+const patternStepDelayWrap = $('pattern-step-delay-wrap');
+const patternStepDelayEl = $('pattern-step-delay');
+const patternShadeNoteEl = $('pattern-shade-note');
+const tgBlink = $('tg-blink');
+const rsBlink = $('rs-blink');
+
+const playlistCuesEl = $('playlist-cues');
+const playlistUnsavedEl = $('playlist-unsaved');
+const playlistStatusEl = $('playlist-status');
+const btnPlaylistAddCue = $('btn-playlist-add-cue');
+const btnPlaylistSave = $('btn-playlist-save');
+const tgPlaylist = $('tg-playlist');
+
+const textContentEl = $('text-content');
+const textFontEl = $('text-font');
+const textFontSizeEl = $('text-font-size');
+const textColorEl = $('text-color');
+const textBgColorEl = $('text-bg-color');
+const textAlignEl = $('text-align');
+const textDirectionEl = $('text-direction');
+const textSpeedEl = $('text-speed');
+const tgText = $('tg-text');
+const rsText = $('rs-text');
+
+const alertsEl = $('alerts');
+const idListEl = $('id-list');
+const idListTitleEl = $('id-list-title');
+const idListNumsEl = $('id-list-nums');
+const gridEl = $('device-grid');
+
+const adminEl = $('admin');
+const sumSchedEl = $('sum-sched');
+const sumReplaceEl = $('sum-replace');
+const sumVersionEl = $('sum-version');
+const stSchedEl = $('st-sched');
+const scheduleEnabledEl = $('schedule-enabled');
+const scheduleStartH = $('schedule-start-h');
+const scheduleStartM = $('schedule-start-m');
+const scheduleEndH = $('schedule-end-h');
+const scheduleEndM = $('schedule-end-m');
+const scheduleDayBtns = $$('#schedule-closed-days button');
+const btnScheduleSave = $('btn-schedule-save');
+const scheduleStatusEl = $('schedule-status');
+
+const stVersionEl = $('st-version');
+const verLatestEl = $('ver-latest');
+const verOkEl = $('ver-ok');
+const verOldEl = $('ver-old');
+const verUnknownEl = $('ver-unknown');
+const otaStatusEl = $('ota-status');
+const btnVersionToggle = $('btn-version-toggle');
+
+const stReplaceEl = $('st-replace');
+const replaceRuleEl = $('replace-rule');
+const vrModeEl = $('vr-mode');
+const vrFileEl = $('vr-file');
+const btnVrStart = $('btn-vr-start');
+const replaceProgressEl = $('replace-progress');
+const vrStepEls = $$('#vr-steps li');
+const vrNumsEl = $('vr-nums');
+const vrBarEl = $('vr-bar');
+const vrProgressNoteEl = $('vr-progress-note');
+const btnVrCancel = $('btn-vr-cancel');
+const vrErrorEl = $('vr-error');
+const fsOkEl = $('fs-ok');
+const fsMisEl = $('fs-mis');
+const fsNaEl = $('fs-na');
+const vrLogWrap = $('vr-log-wrap');
+const vrLogEl = $('vr-log');
+
+const restartDeviceIdsEl = $('restart-device-ids');
+const btnRestartSelected = $('btn-restart-selected');
+const btnRestartAll = $('btn-restart-all');
+const btnRebootSelected = $('btn-reboot-selected');
+
+// ── 표시 이름
 const RUNNING_LABEL = {
   video: '영상 재생', playlist: '재생목록', textPattern: '텍스트 패턴',
-  textScroll: '텍스트 스크롤', pattern: '점멸', sequence: '순차 점멸',
+  textScroll: '텍스트', pattern: '전체 점멸', sequence: '순차 점멸',
 };
-const batteryStatusCountEl = document.getElementById('battery-status-count');
-const deployProgressEl = document.getElementById('deploy-progress');
-const deployProgressTextEl = document.getElementById('deploy-progress-text');
-const deployProgressBarEl = document.getElementById('deploy-progress-bar');
-const otaStatusCountEl = document.getElementById('ota-status-count');
-const versionStatusCountEl = document.getElementById('version-status-count');
-const btnVersionToggle = document.getElementById('btn-version-toggle');
-const btnShowId = document.getElementById('btn-show-id');
-const playStateEl = document.getElementById('play-state');
-const timecodeEl = document.getElementById('timecode');
-const gridEl = document.getElementById('device-grid');
-const offlineListEl = document.getElementById('offline-list');
-const btnPlay = document.getElementById('btn-play');
-const btnStop = document.getElementById('btn-stop');
-
-const modeVideoBtn = document.getElementById('mode-video');
-const modePatternBtn = document.getElementById('mode-pattern');
-const modeTextBtn = document.getElementById('mode-text');
-const btnIdle = document.getElementById('btn-idle');
-const videoControlsEl = document.getElementById('video-controls');
-const patternControlsEl = document.getElementById('pattern-controls');
-const patternColorEl = document.getElementById('pattern-color');
-const patternColorModeEl = document.getElementById('pattern-color-mode');
-const patternColorSaturationEl = document.getElementById('pattern-color-saturation');
-const patternShadeNoteEl = document.getElementById('pattern-shade-note');
-const patternIntervalEl = document.getElementById('pattern-interval');
-const patternDurationEl = document.getElementById('pattern-duration');
-const patternStepDelayEl = document.getElementById('pattern-step-delay');
-const btnPatternPlay = document.getElementById('btn-pattern-play');
-const btnPatternStop = document.getElementById('btn-pattern-stop');
-const btnSequencePlay = document.getElementById('btn-sequence-play');
-const btnSequenceStop = document.getElementById('btn-sequence-stop');
-const playlistCuesEl = document.getElementById('playlist-cues');
-const btnPlaylistAddCue = document.getElementById('btn-playlist-add-cue');
-const btnPlaylistSave = document.getElementById('btn-playlist-save');
-const btnPlaylistPlay = document.getElementById('btn-playlist-play');
-const btnPlaylistStop = document.getElementById('btn-playlist-stop');
-const playlistStatusEl = document.getElementById('playlist-status');
-
-const textControlsEl = document.getElementById('text-controls');
-const textContentEl = document.getElementById('text-content');
-const textFontEl = document.getElementById('text-font');
-const textFontSizeEl = document.getElementById('text-font-size');
-const textColorEl = document.getElementById('text-color');
-const textBgColorEl = document.getElementById('text-bg-color');
-const textAlignEl = document.getElementById('text-align');
-const textDirectionEl = document.getElementById('text-direction');
-const textSpeedEl = document.getElementById('text-speed');
-const btnTextStart = document.getElementById('btn-text-start');
-const btnTextStop = document.getElementById('btn-text-stop');
-
-const restartDeviceIdsEl = document.getElementById('restart-device-ids');
-const btnRestartSelected = document.getElementById('btn-restart-selected');
-const btnRestartAll = document.getElementById('btn-restart-all');
-const btnRebootSelected = document.getElementById('btn-reboot-selected');
-
-// 불일치 셀 툴팁에 보여줄 사유 - 서버 fileReason 값(폰 wall/error 사유 또는 OLD_FILE)
+const MODE_LABEL = { video: '영상', pattern: '패턴', text: '텍스트' };
+// 불일치 셀 툴팁 사유 - 서버 fileReason(폰 wall/error 사유 또는 OLD_FILE)
 const FILE_REASON_LABEL = {
   OLD_FILE: '옛 영상 파일',
   DOWNLOAD_FAILED: '다운로드 실패',
   CHECKSUM_MISMATCH: '체크섬 불일치(서버 파일 확인 필요)',
   RENAME_FAILED: '파일 교체 실패',
 };
+const REBOOT_ERROR_LABEL = { NOT_DEVICE_OWNER: 'Device Owner 아님(재등록 필요)' };
 
-const REBOOT_ERROR_LABEL = {
-  NOT_DEVICE_OWNER: 'Device Owner 아님(재등록 필요)',
-};
+// 문제 알림 종류 - 순서대로 칩을 그린다. icon은 그리드 칸과 같은 모양의 작은 칸.
+const PROBLEMS = [
+  { key: 'off', label: '연결 끊김', icon: 'mini off', title: '연결 끊긴 폰' },
+  { key: 'mis', label: '영상 파일 불일치', icon: 'mini mis', title: '영상 파일이 다른 폰' },
+  { key: 'perr', label: '재생 오류', icon: 'mini perr', title: '재생 오류 폰' },
+  { key: 'rerr', label: '재부팅 실패', icon: 'mini perr', title: '재부팅 요청이 실패한 폰' },
+  { key: 'batt', label: '충전 안 됨', icon: 'mini batt', title: '충전 안 되는 폰' },
+  { key: 'low', label: '배터리 낮음', icon: 'mini low', title: '배터리 낮은 폰' },
+];
 
-const vrFileEl = document.getElementById('vr-file');
-const btnVrStart = document.getElementById('btn-vr-start');
-const btnVrCancel = document.getElementById('btn-vr-cancel');
-const vrStatusEl = document.getElementById('vr-status');
-const vrLogEl = document.getElementById('vr-log');
-
+// ── 상태
+let latest = null; // 마지막 STATUS_UPDATE
 // 패턴/텍스트 설정 입력 중에는 STATUS_UPDATE로 값이 덮어써지지 않도록 막는다.
 let editingPatternConfig = false;
 let editingTextConfig = false;
-
-// 버전 확인/ID 표시 토글 상태 - 서버에 별도로 물어보지 않고 이 페이지에서만 기억한다
-// (새로고침하면 꺼진 상태로 초기화됨 - 폰 쪽 상태와 항상 일치시키려면 서버가 상태를
-// 들고 있어야 하는데, 이 두 토글은 그 정도로 중요하지 않다고 판단해 단순하게 둠).
+let scheduleDirty = false;
+// 패턴: 먼저 "바로 점멸 / 재생목록"을 고르고, 바로 점멸이면 "전체 동시 / 순차"를 고른다.
+let patternKind = 'blink';
+let blinkWay = 'all';
+// 버전 확인/ID 표시 토글 - 서버에 별도로 묻지 않고 이 페이지에서만 기억한다(새로고침하면 꺼짐).
 let versionCheckEnabled = false;
 let idShowing = false;
-
-// 재생목록 - 큐 배열은 이 페이지에서 편집하다가 "저장" 눌러야 서버에 반영된다(자동저장 아님).
-// 재생 중에는 서버가 편집을 거부하므로, 여기서도 재생 중엔 입력을 막아 혼란을 방지한다.
+// 재생목록 - 이 페이지에서 편집하다가 "저장"해야 서버에 반영된다. 재생 중엔 편집을 막는다.
 let playlistCues = [];
 let playlistPlaying = false;
 let playlistCurrentCueIndex = -1;
+let playlistDirty = false;
+// 문제 알림 필터(누른 칩) - 그리드에서 그 폰만 남기고 번호 목록을 보여준다.
+let activeFilter = null;
+let problemIds = {};
+let lastAlertsSignature = '';
+let vrLastStep = 'idle';
 
-// 셀 DOM은 최초 STATUS_UPDATE 수신 시 한 번만 생성하고, 이후에는 상태가 바뀐 셀만 갱신한다.
+// 셀 DOM은 최초 STATUS_UPDATE 때 한 번만 만들고, 이후엔 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
 let lastDevices = {};
 let lastColor = null;
 
+// ── 알림(토스트) / 확인창 - 브라우저 기본 alert/confirm 대신
+let toastTimer = null;
+function showToast(text, isError = false) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.toggle('err', isError);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, TOAST_MS);
+}
+
+let modalResolve = null;
+function confirmModal({ title, body, okLabel = '확인', danger = false }) {
+  $('modal-title').textContent = title;
+  $('modal-body').textContent = body;
+  const ok = $('modal-ok');
+  ok.textContent = okLabel;
+  ok.className = danger ? 'btn-sm red' : 'btn-sm green';
+  document.querySelector('#modal .modal').classList.toggle('danger-modal', danger);
+  $('modal').hidden = false;
+  // 위험한 동작은 실수로 Enter를 눌러도 실행되지 않게 "취소"에 먼저 초점을 둔다.
+  (danger ? $('modal-cancel') : ok).focus();
+  return new Promise((resolve) => { modalResolve = resolve; });
+}
+function closeModal(result) {
+  $('modal').hidden = true;
+  if (modalResolve) modalResolve(result);
+  modalResolve = null;
+}
+$('modal-ok').addEventListener('click', () => closeModal(true));
+$('modal-cancel').addEventListener('click', () => closeModal(false));
+$('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) closeModal(false); });
+
+// POST 요청 공용 - 실패하면 서버가 준 사유를 토스트로 보여주고 null, 성공하면 응답 JSON.
+async function post(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* 본문 없는 응답 */ }
+    if (!res.ok || data.ok === false || data.success === false) {
+      showToast(data.error || '요청이 거부되었습니다.', true);
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('[HTTP] 요청 실패', url, err);
+    showToast('서버에 연결할 수 없습니다. 네트워크를 확인하세요.', true);
+    return null;
+  }
+}
+
+// ── 단위/형식
+const msToSec = (ms) => String(+(Number(ms) / 1000).toFixed(3));
+const secToMs = (sec) => Math.round(Number(sec) * 1000);
+function formatClock(ms) {
+  const total = Math.max(0, Math.floor((ms || 0) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+function formatDuration(ms) {
+  const min = Math.round((ms || 0) / 60000);
+  if (min < 1) return '1분 미만';
+  if (min < 60) return `${min}분`;
+  return `${Math.floor(min / 60)}시간 ${min % 60}분`;
+}
+function setPill(el, cls, text) {
+  el.className = `pill ${cls}`.trim();
+  el.innerHTML = '<i></i>';
+  el.append(text);
+}
+
+// ── 기기 그리드
 function ensureGrid(deviceIds) {
   if (cellRefs) return;
-
   cellRefs = {};
   deviceIds.forEach((id) => {
     const cell = document.createElement('div');
     cell.className = 'device-cell offline';
-    cell.title = String(id);
+    cell.title = `#${id}`;
     gridEl.appendChild(cell);
     cellRefs[id] = cell;
   });
 }
 
+// ── STATUS_UPDATE (1초마다)
 function applyStatusUpdate(data) {
+  latest = data;
   ensureGrid(Object.keys(data.devices));
 
-  onlineCountEl.textContent = `온라인: ${String(data.online).padStart(3, '0')} / ${data.total}`;
-
-  if (data.playState === 'playing') {
-    playStateEl.textContent = '● 재생 중';
-    playStateEl.className = 'play-state playing';
-    timecodeEl.textContent = formatTimecode(data.timecode);
-    timecodeEl.style.display = '';
-  } else {
-    playStateEl.textContent = '■ 정지';
-    playStateEl.className = 'play-state stopped';
-    timecodeEl.textContent = '';
-    timecodeEl.style.display = 'none';
-  }
-
   const currentColorHex = data.currentColor && data.currentColor.color;
-
-  const offlineIds = [];
   const fileStatus = data.fileStatus || {};
   const fileReason = data.fileReason || {};
-  const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
   const playerError = data.playerError || {};
-  let playerErrorCount = 0;
   const rebootError = data.rebootError || {};
-  let rebootErrorCount = 0;
   const otaStatus = data.otaStatus || {};
-  const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
   const versions = data.versions || {};
-  const latestVersionCode = data.latestVersionCode;
-  const versionCounts = { latest: 0, old: 0, unknown: 0 };
   const battery = data.battery || {};
-  const batteryCounts = { ok: 0, low: 0, notCharging: 0, unknown: 0 };
+  const latestVersionCode = data.latestVersionCode;
+
+  const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
+  const versionCounts = { latest: 0, old: 0, unknown: 0 };
+  const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
+  const ids = { off: [], mis: [], perr: [], rerr: [], batt: [], low: [] };
 
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
+    const cell = cellRefs[id];
 
-    // 변경된 기기만 DOM을 갱신한다 (500칸 전체 리렌더 금지)
-    if (lastDevices[id] !== status) {
-      const cell = cellRefs[id];
-      if (cell) {
-        cell.classList.toggle('online', status === 'online');
-        cell.classList.toggle('offline', status === 'offline');
-        cell.style.backgroundColor = status === 'online' && currentColorHex ? currentColorHex : '';
-      }
+    // 연결 상태가 바뀐 칸만 다시 칠한다(439칸 전체 리렌더 금지)
+    if (lastDevices[id] !== status && cell) {
+      cell.classList.toggle('online', status === 'online');
+      cell.classList.toggle('offline', status === 'offline');
+      cell.style.backgroundColor = status === 'online' && currentColorHex ? currentColorHex : '';
     }
+    if (status === 'offline') ids.off.push(id);
 
     const fStatus = fileStatus[id] || 'unknown';
     fileCounts[fStatus] = (fileCounts[fStatus] || 0) + 1;
-    const cell = cellRefs[id];
-    if (cell) cell.classList.toggle('mismatch', fStatus === 'mismatch');
+    if (fStatus === 'mismatch') ids.mis.push(id);
 
     const oStatus = otaStatus[id] || 'idle';
     otaCounts[oStatus] = (otaCounts[oStatus] || 0) + 1;
 
-    // 버전 카운트/셀 표시는 latestVersionCode를 알 때만 의미가 있다(app-version.json 없으면
-    // 비교 기준이 없어 전부 unknown 취급). 토글이 꺼져 있어도 카운트 텍스트는 항상 계산해서
-    // 보여준다 - 셀 강조만 토글로 켜고 끈다.
+    // 버전 비교는 latestVersionCode(app-version.json)를 알 때만 의미가 있다.
     const v = versions[id];
     const vKey = typeof v !== 'number' || typeof latestVersionCode !== 'number'
       ? 'unknown'
       : (v >= latestVersionCode ? 'latest' : 'old');
     versionCounts[vKey] += 1;
-    if (cell) cell.classList.toggle('version-mismatch', versionCheckEnabled && vKey === 'old');
 
-    // 439대 상시 USB 전원 설치라 배터리 %보다 "충전 중인지"가 더 급한 신호다 - 케이블이
-    // 헐거워지면 완전 방전으로 꺼지기 몇 시간 전부터 미리 알 수 있다.
+    // 상시 USB 전원 설치라 "충전 중인지"가 가장 급한 신호 - 충전 안 됨이 배터리 낮음보다 우선.
     const b = battery[id];
     const batteryKey = !b ? 'unknown' : !b.charging ? 'notCharging' : b.pct < LOW_BATTERY_PCT ? 'low' : 'ok';
-    batteryCounts[batteryKey] += 1;
+    if (batteryKey === 'notCharging') ids.batt.push(id);
+    if (batteryKey === 'low') ids.low.push(id);
     const pError = playerError[id];
-    if (pError) playerErrorCount += 1;
+    if (pError) ids.perr.push(id);
     const rError = rebootError[id];
-    if (rError) rebootErrorCount += 1;
+    if (rError) ids.rerr.push(id);
 
     if (cell) {
+      cell.classList.toggle('mismatch', fStatus === 'mismatch');
+      cell.classList.toggle('version-mismatch', versionCheckEnabled && vKey === 'old');
       cell.classList.toggle('battery-not-charging', batteryKey === 'notCharging');
       cell.classList.toggle('battery-low', batteryKey === 'low');
       cell.classList.toggle('player-error', Boolean(pError));
 
-      const tips = [`#${id}`];
-      if (b) tips.push(`배터리 ${b.pct}% (${b.charging ? '충전 중' : '미충전'})`);
+      const tips = [`#${id} · ${status === 'online' ? '연결됨' : '연결 끊김'}`];
+      if (b) tips.push(`배터리 ${b.pct}% (${b.charging ? '충전 중' : '충전 안 됨'})`);
+      if (typeof v === 'number') tips.push(`앱 v${v}${vKey === 'old' ? ' (구버전)' : ''}`);
       if (fStatus === 'mismatch') {
         const reason = fileReason[id];
-        tips.push(`파일 불일치 - ${FILE_REASON_LABEL[reason] || reason || '사유 없음'}`);
+        tips.push(`영상 파일 불일치 - ${FILE_REASON_LABEL[reason] || reason || '사유 없음'}`);
       }
       if (pError) tips.push(`재생 오류 - ${pError}`);
       if (rError) tips.push(`재부팅 요청 실패 - ${REBOOT_ERROR_LABEL[rError] || rError}`);
       cell.title = tips.join('\n');
     }
-
-    if (status === 'offline') offlineIds.push(id);
   }
   lastDevices = data.devices;
 
-  fileStatusCountEl.textContent =
-    `파일: 정상 ${fileCounts.ok} / 불일치 ${fileCounts.mismatch} / 무응답 ${fileCounts.unknown}`;
-
-  playerErrorCountEl.textContent = rebootErrorCount > 0
-    ? `재생오류 ${playerErrorCount} · 재부팅 실패 ${rebootErrorCount}`
-    : `재생오류 ${playerErrorCount}`;
-  playerErrorCountEl.classList.toggle('has-error', playerErrorCount + rebootErrorCount > 0);
-
-  // 영상 배포는 동시 다운로드 수를 제한해 순차로 나가서 몇 분~수십 분 걸린다("영상 교체"
-  // 패널은 발행 시작 시점에 done으로 넘어가므로) - 진행 중일 때만 진행률을 보여준다.
-  const deploy = data.deploy;
-  deployProgressEl.hidden = !deploy;
-  // 서버도 배포 중엔 /api/play를 거부한다(업체 PLAY_TRIGGER 포함) - 버튼은 그 상태를 보여주는 것뿐.
-  btnPlay.disabled = Boolean(deploy);
-  playBlockedNoteEl.hidden = !deploy;
-  if (deploy) {
-    const c = deploy.counts;
-    deployProgressTextEl.textContent = deploy.finished
-      ? `배포 완료 - 재검증 중 (실패 ${c.failed + c.mismatch} / 시간초과 ${c.timeout})`
-      : `배포: ${deploy.settled}/${deploy.total} 완료 · 다운로드 중 ${deploy.inFlight} · 대기 ${deploy.queued}`
-        + ` (실패 ${c.failed + c.mismatch} / 시간초과 ${c.timeout})`;
-    deployProgressBarEl.max = Math.max(deploy.total, 1);
-    deployProgressBarEl.value = deploy.settled;
-  }
-
-  batteryStatusCountEl.textContent =
-    `배터리: 정상 ${batteryCounts.ok} / 낮음 ${batteryCounts.low} `
-    + `/ 미충전 ${batteryCounts.notCharging} / 확인불가 ${batteryCounts.unknown}`;
-
-  otaStatusCountEl.textContent =
-    `OTA: 대기 ${otaCounts.idle} / 다운 ${otaCounts.downloading} / 설치 ${otaCounts.installing} `
-    + `/ 완료 ${otaCounts.done} / 실패 ${otaCounts.failed}`;
-
-  versionStatusCountEl.textContent = typeof latestVersionCode !== 'number'
-    ? '버전: app-version.json 없음'
-    : `버전(최신 v${latestVersionCode}): 최신 ${versionCounts.latest} / 구버전 ${versionCounts.old} `
-      + `/ 확인불가 ${versionCounts.unknown}`;
-
-  offlineListEl.textContent = offlineIds.length > 0 ? offlineIds.join(', ') : '없음';
-
-  // 컬러 자체가 바뀐 경우엔 상태가 그대로인 online 셀들도 다시 칠해야 한다.
+  // 현재 색이 바뀌면 상태가 그대로인 연결된 칸들도 다시 칠한다.
   if (currentColorHex !== lastColor) {
     Object.keys(data.devices).forEach((id) => {
       if (data.devices[id] !== 'online') return;
@@ -273,132 +342,191 @@ function applyStatusUpdate(data) {
     lastColor = currentColorHex;
   }
 
-  if (data.currentMode) setModeUi(data.currentMode, data.idleMode);
-  applyModeLock(data.running);
-  if (data.schedule) applySchedule(data.schedule);
+  problemIds = ids;
+  renderAlerts();
+  applyFilter();
+
+  onlineEl.innerHTML = '';
+  onlineEl.append(String(data.online), Object.assign(document.createElement('span'), { textContent: ` / ${data.total}대 연결` }));
+  if (data.schedule) serverTimeEl.textContent = data.schedule.serverTimeText;
+
+  renderNow(data);
+  renderModes(data);
+  renderVideoPanel(data);
+  renderPatternPanel(data);
+  renderTextPanel(data);
+  if (data.schedule) renderSchedule(data.schedule);
+  renderVersion(versionCounts, otaCounts, latestVersionCode);
+  renderReplace(data, fileCounts);
+}
+
+// ── 지금 상태
+function renderNow(data) {
+  const running = data.running;
+  const vr = data.videoReplace || {};
+  let dot = '';
+  let title;
+  let sub = '';
+
+  if (data.replacing) {
+    dot = 'busy';
+    title = '영상 교체 중';
+    sub = data.deploy ? '새 영상을 폰에 배포하는 중입니다' : '새 영상을 준비하는 중입니다 (관리 > 영상 교체에서 진행 상황 확인)';
+  } else if (data.idleMode) {
+    dot = 'idle';
+    title = '절전 (화면 꺼짐)';
+    const s = data.schedule;
+    sub = s && s.enabled && !s.operating ? '운영 시간이 아닙니다' : '절전 모드로 꺼 둔 상태입니다';
+  } else if (running === 'video') {
+    title = '영상 재생 중';
+    sub = `재생 ${formatClock(data.timecode)} · 반복 재생`;
+  } else if (running === 'playlist') {
+    title = playlistCurrentCueIndex >= 0 && playlistCues.length > 0
+      ? `패턴 · 재생목록 ${playlistCurrentCueIndex + 1}/${playlistCues.length}`
+      : '패턴 · 재생목록 재생 중';
+    sub = '저장된 큐를 순서대로 반복합니다';
+  } else if (running === 'pattern' || running === 'sequence') {
+    title = `패턴 · ${RUNNING_LABEL[running]} 중`;
+  } else if (running === 'textScroll') {
+    title = '텍스트 흐르는 중';
+    sub = latest && latest.textScrollConfig ? `"${latest.textScrollConfig.text.split('\n')[0]}"` : '';
+  } else if (running === 'textPattern') {
+    title = '텍스트 패턴 표시 중';
+  } else {
+    dot = 'idle';
+    title = `${MODE_LABEL[data.currentMode] || ''} 모드 · 정지`;
+    sub = '아래에서 시작할 수 있습니다';
+  }
+  if (vr.step === 'error' && !data.replacing) sub = `${sub ? `${sub} · ` : ''}최근 영상 교체 실패`;
+
+  nowDotEl.className = `now-dot ${dot}`.trim();
+  nowTitleEl.textContent = title;
+  nowSubEl.textContent = sub;
+
+  const s = data.schedule;
+  schedLineEl.innerHTML = '';
+  if (s && s.enabled) {
+    const b = document.createElement('b');
+    b.textContent = `${s.start}~${s.end}`;
+    const next = s.nextAction
+      ? ` · 다음 ${s.nextAction.atText} ${s.nextAction.type === 'play' ? '재생 시작' : '절전 전환'}`
+      : '';
+    schedLineEl.append('운영 시간 ', b, ` · ${s.operating ? '운영 중' : '운영 시간 아님'}${next}`);
+  } else {
+    schedLineEl.textContent = '운영 시간 타이머 꺼짐';
+  }
+}
+
+// ── 모드 선택
+function currentModeKey(data) {
+  return data.idleMode ? 'idle' : data.currentMode;
+}
+
+function renderModes(data) {
+  const mode = currentModeKey(data);
+  const locked = Boolean(data.running) || Boolean(data.replacing);
+  modeTabs.forEach((t) => {
+    t.setAttribute('aria-selected', String(t.dataset.mode === mode));
+    t.disabled = locked && t.dataset.mode !== mode;
+  });
+  panels.forEach((p) => { p.hidden = p.dataset.panel !== mode; });
+
+  modeLockedNoteEl.hidden = !locked;
+  if (data.replacing) {
+    modeLockedNoteEl.textContent = '영상 교체 중에는 모드를 바꾸거나 재생할 수 없습니다';
+  } else if (data.running) {
+    modeLockedNoteEl.textContent = `${RUNNING_LABEL[data.running] || data.running} 중에는 모드를 바꿀 수 없습니다 · 먼저 정지하세요`;
+  }
+}
+
+modeTabs.forEach((t) => t.addEventListener('click', () => {
+  if (t.disabled || t.getAttribute('aria-selected') === 'true') return;
+  if (t.dataset.mode === 'idle') post('/api/idle');
+  else post('/api/mode', { mode: t.dataset.mode });
+}));
+
+// ── 재생/정지 한 버튼 공용
+function setToggle(btn, runStateEl, on, onLabel, offLabel) {
+  btn.classList.toggle('on', on);
+  btn.textContent = on ? onLabel : offLabel;
+  if (runStateEl) {
+    runStateEl.classList.toggle('on', on);
+    runStateEl.querySelector('span').textContent = on ? '실행 중' : '정지됨';
+  }
+}
+
+// ── 영상
+function renderVideoPanel(data) {
+  const playing = data.playState === 'playing';
+  setToggle(tgVideo, rsVideo, playing, '■ 영상 정지', '▶ 영상 재생');
+  tgVideo.disabled = Boolean(data.replacing) && !playing;
+  videoNoteEl.hidden = !data.replacing;
+  videoNoteEl.textContent = '영상 교체가 끝나면 재생할 수 있습니다';
+}
+
+tgVideo.addEventListener('click', async () => {
+  const playing = tgVideo.classList.contains('on');
+  const res = await post(playing ? '/api/stop' : '/api/play');
+  if (res) showToast(playing ? '영상을 정지했습니다' : '영상 재생을 시작했습니다 (1초 뒤 동시 시작)');
+});
+
+// ── 패턴
+function renderPatternPanel(data) {
+  const running = data.running;
+  const blinkRunning = running === 'pattern' || running === 'sequence';
+
+  // 실행 중인 쪽을 화면에도 맞춘다(다른 PC에서 시작했어도 보이게)
+  if (running === 'playlist') patternKind = 'playlist';
+  if (blinkRunning) {
+    patternKind = 'blink';
+    blinkWay = running === 'sequence' ? 'sequence' : 'all';
+  }
+  applyPatternKindUi();
+  kindBtns.forEach((k) => {
+    k.disabled = (running === 'playlist' && k.dataset.kind !== 'playlist')
+      || (blinkRunning && k.dataset.kind !== 'blink');
+  });
+  wayBtns.forEach((w) => { w.disabled = blinkRunning && w.dataset.way !== blinkWay; });
 
   if (data.patternConfig && !editingPatternConfig) {
-    patternColorEl.value = data.patternConfig.color;
-    patternIntervalEl.value = data.patternConfig.interval;
-    patternDurationEl.value = data.patternConfig.duration;
-    patternStepDelayEl.value = data.patternConfig.stepDelay;
-    patternColorModeEl.value = data.patternConfig.colorMode || 'fixed';
-    patternColorSaturationEl.value = data.patternConfig.colorSaturation ?? 100;
-    applyPatternColorModeUi(patternColorModeEl.value);
+    const c = data.patternConfig;
+    patternColorEl.value = c.color;
+    patternIntervalEl.value = msToSec(c.interval);
+    patternDurationEl.value = msToSec(c.duration);
+    patternStepDelayEl.value = msToSec(c.stepDelay);
+    patternColorModeEl.value = c.colorMode || 'fixed';
+    patternColorSaturationEl.value = c.colorSaturation ?? 100;
+    applyPatternColorModeUi();
   }
 
-  if (data.textScrollConfig && !editingTextConfig) {
-    textContentEl.value = data.textScrollConfig.text;
-    textFontEl.value = data.textScrollConfig.font;
-    textFontSizeEl.value = data.textScrollConfig.fontSize;
-    textColorEl.value = data.textScrollConfig.color;
-    textBgColorEl.value = data.textScrollConfig.bgColor;
-    textAlignEl.value = data.textScrollConfig.align;
-    textDirectionEl.value = data.textScrollConfig.direction;
-    textSpeedEl.value = data.textScrollConfig.speed;
-  }
-
+  setToggle(tgBlink, rsBlink, blinkRunning, '■ 점멸 정지', '▶ 점멸 시작');
+  setToggle(tgPlaylist, null, playlistPlaying, '■ 재생목록 정지', '▶ 재생목록 재생');
+  tgPlaylist.disabled = !playlistPlaying && (playlistCues.length === 0 || blinkRunning);
 }
 
-// 모드 토글 강조 표시 + 그 모드에 쓰는 컨트롤 그룹만 보여준다(나머지는 hidden으로
-// 화면에서 아예 빠짐 - 예전엔 전부 항상 그려두고 흐리게(disabled)만 했었음).
-// 절전 모드는 서버 내부적으론 currentMode='pattern'을 재사용하지만(POST /api/idle),
-// 대시보드에서는 독립된 탭처럼 보이게 한다 - idleMode가 true면 세 모드 탭 중 아무것도
-// 활성화하지 않고 컨트롤 그룹도 전부 숨겨서 재생 관련 메뉴가 하나도 안 보이게 한다.
-function setModeUi(mode, idleMode) {
-  const isVideo = !idleMode && mode === 'video';
-  const isPattern = !idleMode && mode === 'pattern';
-  const isText = !idleMode && mode === 'text';
-
-  modeVideoBtn.classList.toggle('active', isVideo);
-  modePatternBtn.classList.toggle('active', isPattern);
-  modeTextBtn.classList.toggle('active', isText);
-  btnIdle.classList.toggle('active', Boolean(idleMode));
-
-  videoControlsEl.hidden = !isVideo;
-  patternControlsEl.hidden = !isPattern;
-  textControlsEl.hidden = !isText;
+function applyPatternKindUi() {
+  kindBtns.forEach((k) => k.setAttribute('aria-pressed', String(k.dataset.kind === patternKind)));
+  wayBtns.forEach((w) => w.setAttribute('aria-pressed', String(w.dataset.way === blinkWay)));
+  ptBlinkEl.hidden = patternKind !== 'blink';
+  ptPlaylistEl.hidden = patternKind !== 'playlist';
+  patternStepDelayWrap.hidden = blinkWay !== 'sequence';
 }
 
-// 무언가 실행 중이면 모드 탭과 절전 버튼을 막는다 - 서버도 같은 기준으로 /api/mode, /api/idle을
-// 거부한다(409). 운영 시간 타이머와 업체 1회 재생만 예외로 서버가 전부 정지한 뒤 모드를 바꾼다.
-function applyModeLock(running) {
-  [modeVideoBtn, modePatternBtn, modeTextBtn, btnIdle].forEach((btn) => { btn.disabled = Boolean(running); });
-  modeLockedNoteEl.hidden = !running;
-  if (running) {
-    modeLockedNoteEl.textContent = `${RUNNING_LABEL[running] || running} 중 - 정지한 뒤 모드를 바꿀 수 있습니다`;
-  }
-}
-
-// 입력 중인 값이 1초마다 오는 STATUS_UPDATE로 덮어써지지 않도록, 사용자가 건드린 뒤
-// 저장하기 전까지는 입력칸을 갱신하지 않는다.
-let scheduleDirty = false;
-
-function applySchedule(schedule) {
-  scheduleBadgeEl.textContent = schedule.enabled ? `타이머 ${schedule.start}~${schedule.end}` : '타이머 꺼짐';
-
-  if (!scheduleDirty) {
-    scheduleEnabledEl.checked = schedule.enabled;
-    scheduleStartEl.value = schedule.start;
-    scheduleEndEl.value = schedule.end;
-    scheduleDayEls.forEach((el) => { el.checked = schedule.closedDays.includes(Number(el.dataset.day)); });
-  }
-
-  const parts = [`서버 시각 ${schedule.serverTimeText}`];
-  if (!schedule.enabled) {
-    parts.push('타이머 꺼짐');
-  } else {
-    parts.push(schedule.operating ? '운영 중' : '운영 시간 아님');
-    if (schedule.nextAction) {
-      const label = schedule.nextAction.type === 'play' ? '영상 재생 시작' : '절전 전환';
-      parts.push(`다음: ${schedule.nextAction.atText} ${label}`);
-    }
-    if (schedule.waitingForDeploy) parts.push('영상 배포가 끝나면 재생 시작');
-  }
-  scheduleStatusEl.textContent = parts.join(' · ');
-}
-
-// 409 등 서버가 거부한 경우 사유를 보여준다.
-function alertOnError(res) {
-  if (res.ok) return null;
-  return res.json().then((body) => window.alert(body.error || '요청이 거부되었습니다.'));
-}
-
-function postJson(url, body) {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-function sendPatternConfig() {
-  postJson('/api/pattern/config', {
-    color: patternColorEl.value,
-    interval: Number(patternIntervalEl.value),
-    duration: Number(patternDurationEl.value),
-    stepDelay: Number(patternStepDelayEl.value),
-    colorMode: patternColorModeEl.value,
-    colorSaturation: Number(patternColorSaturationEl.value),
-  }).catch((err) => console.error('[HTTP] 패턴 설정 저장 실패', err));
-}
-
-// 색상 모드에 따라 색상 피커/채도 입력을 켜고 끈다 - 색상 피커는 지정 색을 쓰는 모드("고정",
-// "랜덤(지정색)")에서만 의미가 있고, 채도는 "랜덤(컬러)"에서만 의미가 있다(랜덤(흑백)은 채도가
-// 항상 0, 랜덤(지정색)은 지정 색의 채도를 그대로 쓰는 개념).
-function applyPatternColorModeUi(mode) {
-  patternColorEl.disabled = !colorModeUsesColor(mode);
-  patternColorSaturationEl.disabled = mode !== 'random';
-  updatePatternShadeNote();
-}
+kindBtns.forEach((k) => k.addEventListener('click', () => {
+  if (k.disabled) return;
+  patternKind = k.dataset.kind;
+  applyPatternKindUi();
+}));
+wayBtns.forEach((w) => w.addEventListener('click', () => {
+  if (w.disabled) return;
+  blinkWay = w.dataset.way;
+  applyPatternKindUi();
+}));
 
 // 지정 색을 쓰는 색상 모드 - "고정"과 "랜덤(지정색)"(그 색의 톤 안에서 밝기만 무작위).
 function colorModeUsesColor(mode) {
   return mode === 'fixed' || mode === 'randomShade';
 }
-
-// 랜덤(지정색)의 최소 밝기 - 폰 MainActivity.RANDOM_MIN_VALUE와 같은 값이어야 한다.
-const RANDOM_SHADE_MIN_BRIGHTNESS = 0.3;
 
 // "#RRGGBB"의 밝기(HSV 명도, 0~1) - 폰이 쓰는 Color.colorToHSV의 V와 같은 계산.
 function hexBrightness(hex) {
@@ -406,8 +534,7 @@ function hexBrightness(hex) {
   return Math.max((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff) / 255;
 }
 
-// 랜덤(지정색) 안내 - 지정 색이 최소 밝기 이하면 폰이 무작위 없이 그 색 그대로 쓰므로
-// "고장 난 것처럼" 보이지 않게 경고한다. 그 외 모드면 null.
+// 랜덤(지정색) 안내 - 지정 색이 최소 밝기 이하면 폰이 무작위 없이 그 색 그대로 쓰므로 경고한다.
 function shadeNote(mode, hex) {
   if (mode !== 'randomShade') return null;
   const brightness = hexBrightness(hex);
@@ -417,8 +544,12 @@ function shadeNote(mode, hex) {
   return { warn: false, text: `폰마다 밝기 30%~${Math.round(brightness * 100)}% 사이에서 깜빡일 때마다 달라집니다` };
 }
 
-function updatePatternShadeNote() {
-  const note = shadeNote(patternColorModeEl.value, patternColorEl.value);
+// 색상 모드에 따라 색상 선택/채도 칸을 켜고 끈다 - 채도는 랜덤(컬러)일 때만 보인다.
+function applyPatternColorModeUi() {
+  const mode = patternColorModeEl.value;
+  patternColorEl.disabled = !colorModeUsesColor(mode);
+  patternSaturationWrap.hidden = mode !== 'random';
+  const note = shadeNote(mode, patternColorEl.value);
   patternShadeNoteEl.hidden = !note;
   if (note) {
     patternShadeNoteEl.textContent = note.text;
@@ -426,319 +557,47 @@ function updatePatternShadeNote() {
   }
 }
 
-function sendTextConfig() {
-  postJson('/api/text/config', {
-    text: textContentEl.value,
-    font: textFontEl.value,
-    fontSize: Number(textFontSizeEl.value),
-    color: textColorEl.value,
-    bgColor: textBgColorEl.value,
-    align: textAlignEl.value,
-    direction: textDirectionEl.value,
-    speed: Number(textSpeedEl.value),
-  }).catch((err) => console.error('[HTTP] 텍스트 설정 저장 실패', err));
-}
-
-function formatTimecode(ms) {
-  const totalMs = Math.max(0, ms || 0);
-  const minutes = Math.floor(totalMs / 60000);
-  const seconds = Math.floor((totalMs % 60000) / 1000);
-  const millis = Math.floor(totalMs % 1000);
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
-}
-
-function connect() {
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${protocol}://${location.host}`);
-
-  ws.addEventListener('open', () => {
-    console.log('[WS] 연결됨');
-  });
-
-  ws.addEventListener('message', (event) => {
-    const data = JSON.parse(event.data);
-    if (data.type === 'STATUS_UPDATE') applyStatusUpdate(data);
-    if (data.type === 'VIDEO_REPLACE_PROGRESS') applyVideoReplaceProgress(data);
-    if (data.type === 'PATTERN_PLAYLIST_PROGRESS') applyPlaylistProgress(data);
-  });
-
-  ws.addEventListener('close', () => {
-    console.log('[WS] 연결 끊김 - 3초 후 재연결');
-    setTimeout(connect, RECONNECT_DELAY_MS);
-  });
-
-  ws.addEventListener('error', () => {
-    ws.close();
+function sendPatternConfig() {
+  return post('/api/pattern/config', {
+    color: patternColorEl.value,
+    interval: secToMs(patternIntervalEl.value),
+    duration: secToMs(patternDurationEl.value),
+    stepDelay: secToMs(patternStepDelayEl.value),
+    colorMode: patternColorModeEl.value,
+    colorSaturation: Number(patternColorSaturationEl.value),
   });
 }
 
-btnPlay.addEventListener('click', () => {
-  fetch('/api/play', { method: 'POST' })
-    .then((res) => (res.ok ? null : res.json().then((body) => window.alert(body.error || '재생 요청 실패'))))
-    .catch((err) => console.error('[HTTP] PLAY 요청 실패', err));
-});
-
-btnStop.addEventListener('click', () => {
-  fetch('/api/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] STOP 요청 실패', err));
-});
-
-modeVideoBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'video' }).then(alertOnError)
-    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
-});
-
-modePatternBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'pattern' }).then(alertOnError)
-    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
-});
-
-modeTextBtn.addEventListener('click', () => {
-  postJson('/api/mode', { mode: 'text' }).then(alertOnError)
-    .catch((err) => console.error('[HTTP] 모드 전환 요청 실패', err));
-});
-
-// 서버 내부적으로는 패턴 모드로 전환하는 것뿐이지만(POST /api/idle), 대시보드에는
-// idleMode 플래그로 내려와 독립된 탭처럼 활성 표시되고 다른 컨트롤은 다 숨겨진다
-// (setModeUi 참고). 클릭 자체는 여기서 상태를 바꾸지 않고 STATUS_UPDATE를 기다린다.
-btnIdle.addEventListener('click', () => {
-  fetch('/api/idle', { method: 'POST' }).then(alertOnError)
-    .catch((err) => console.error('[HTTP] 절전 모드 요청 실패', err));
-});
-
-[scheduleEnabledEl, scheduleStartEl, scheduleEndEl, ...scheduleDayEls].forEach((el) => {
-  el.addEventListener('input', () => { scheduleDirty = true; });
-  el.addEventListener('change', () => { scheduleDirty = true; });
-});
-
-btnScheduleSave.addEventListener('click', () => {
-  const body = {
-    enabled: scheduleEnabledEl.checked,
-    start: scheduleStartEl.value,
-    end: scheduleEndEl.value,
-    closedDays: scheduleDayEls.filter((el) => el.checked).map((el) => Number(el.dataset.day)),
-  };
-  if (body.enabled && !window.confirm(
-    `운영 시간 ${body.start}~${body.end}로 저장할까요?\n`
-    + '타이머를 새로 켜면 지금 시각 기준으로 바로 적용됩니다(운영 시간이면 영상 재생, 아니면 절전).',
-  )) return;
-
-  postJson('/api/schedule', body)
-    .then((res) => {
-      if (res.ok) {
-        scheduleDirty = false;
-        return null;
-      }
-      return alertOnError(res);
-    })
-    .catch((err) => console.error('[HTTP] 운영 시간 저장 실패', err));
-});
-
-[
-  patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl,
-  patternColorModeEl, patternColorSaturationEl,
-].forEach((el) => {
-  el.addEventListener('focus', () => {
-    editingPatternConfig = true;
+[patternColorEl, patternIntervalEl, patternDurationEl, patternStepDelayEl, patternColorModeEl, patternColorSaturationEl]
+  .forEach((el) => {
+    el.addEventListener('focus', () => { editingPatternConfig = true; });
+    el.addEventListener('blur', () => { editingPatternConfig = false; });
+    el.addEventListener('change', sendPatternConfig);
   });
-  el.addEventListener('blur', () => {
-    editingPatternConfig = false;
-  });
-  el.addEventListener('change', sendPatternConfig);
-});
+patternColorModeEl.addEventListener('change', applyPatternColorModeUi);
+patternColorEl.addEventListener('input', applyPatternColorModeUi);
 
-patternColorModeEl.addEventListener('change', () => {
-  applyPatternColorModeUi(patternColorModeEl.value);
-});
-
-patternColorEl.addEventListener('input', updatePatternShadeNote);
-
-[textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
-  textAlignEl, textDirectionEl, textSpeedEl].forEach((el) => {
-  el.addEventListener('focus', () => {
-    editingTextConfig = true;
-  });
-  el.addEventListener('blur', () => {
-    editingTextConfig = false;
-  });
-  el.addEventListener('change', sendTextConfig);
-});
-
-btnTextStart.addEventListener('click', () => {
-  fetch('/api/text/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 시작 요청 실패', err));
-});
-
-btnTextStop.addEventListener('click', () => {
-  fetch('/api/text/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 텍스트 정지 요청 실패', err));
-});
-
-btnPatternPlay.addEventListener('click', () => {
-  fetch('/api/pattern/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 패턴 시작 요청 실패', err));
-});
-
-btnPatternStop.addEventListener('click', () => {
-  fetch('/api/pattern/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 패턴 정지 요청 실패', err));
-});
-
-btnSequencePlay.addEventListener('click', () => {
-  fetch('/api/sequence/start', { method: 'POST' }).catch((err) => console.error('[HTTP] 순차 점멸 시작 요청 실패', err));
-});
-
-btnSequenceStop.addEventListener('click', () => {
-  fetch('/api/sequence/stop', { method: 'POST' }).catch((err) => console.error('[HTTP] 순차 점멸 정지 요청 실패', err));
-});
-
-// duration:0 = 자동으로 안 꺼지고 계속 표시(PATTERN_START의 duration=0과 같은 관례) -
-// 끌 때는 /api/hide-id로 명시적으로 끈다. 상태는 이 버튼 라벨로만 표시한다.
-btnShowId.addEventListener('click', () => {
-  const turningOn = !idShowing;
-  const url = turningOn ? '/api/show-id' : '/api/hide-id';
-  const body = turningOn ? { duration: 0 } : undefined;
-  fetch(url, {
-    method: 'POST',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  })
-    .then(() => {
-      idShowing = turningOn;
-      btnShowId.textContent = idShowing ? 'ID 끄기' : 'ID 표시';
-      btnShowId.classList.toggle('active', idShowing);
-    })
-    .catch((err) => console.error('[HTTP] ID 표시 토글 요청 실패', err));
-});
-
-btnVersionToggle.addEventListener('click', () => {
-  versionCheckEnabled = !versionCheckEnabled;
-  btnVersionToggle.textContent = versionCheckEnabled ? '버전 확인 끄기' : '버전 확인 켜기';
-  btnVersionToggle.classList.toggle('active', versionCheckEnabled);
-  // 다음 STATUS_UPDATE(최대 1초 내)가 오면 셀 강조가 자동으로 반영된다.
-});
-
-// 쉼표로 구분된 deviceId 문자열("1, 2,3")을 정수 배열로 파싱한다. 잘못된 값이 섞여 있으면 null.
-function parseDeviceIds(text) {
-  const parts = text.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
-  if (parts.length === 0) return null;
-
-  const ids = parts.map(Number);
-  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) return undefined;
-  return ids;
-}
-
-// 입력칸의 deviceId 목록을 읽는다. 비었거나 형식이 틀리면 안내를 띄우고 null을 돌려준다.
-function readSelectedDeviceIds(emptyMessage) {
-  const ids = parseDeviceIds(restartDeviceIdsEl.value);
-  if (ids === undefined) {
-    window.alert('deviceId는 쉼표로 구분된 양의 정수로 입력하세요 (예: 1,2,3)');
-    return null;
-  }
-  if (ids === null) {
-    window.alert(emptyMessage);
-    return null;
-  }
-  return ids;
-}
-
-btnRestartSelected.addEventListener('click', () => {
-  const ids = readSelectedDeviceIds('재시작할 deviceId를 입력하세요 (전체는 "전체 재시작" 버튼 사용)');
-  if (!ids) return;
-  if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재시작할까요?`)) return;
-
-  postJson('/api/restart-app', { targetDeviceIds: ids })
-    .catch((err) => console.error('[HTTP] 앱 재시작(선택) 요청 실패', err));
-});
-
-btnRestartAll.addEventListener('click', () => {
-  if (!window.confirm('전체 기기를 재시작할까요?')) return;
-
-  fetch('/api/restart-app', { method: 'POST' })
-    .catch((err) => console.error('[HTTP] 앱 재시작(전체) 요청 실패', err));
-});
-
-// 재부팅은 전체 버튼이 없다 - 서버도 targetDeviceIds를 필수로 받는다.
-btnRebootSelected.addEventListener('click', () => {
-  const ids = readSelectedDeviceIds('재부팅할 deviceId를 입력하세요');
-  if (!ids) return;
-  if (!window.confirm(`${ids.length}대(${ids.join(', ')})를 재부팅할까요? 폰이 다시 켜질 때까지 1~2분 걸립니다.`)) return;
-
-  postJson('/api/reboot-device', { targetDeviceIds: ids })
-    .catch((err) => console.error('[HTTP] 기기 재부팅 요청 실패', err));
-});
-
-// ── 영상 교체 ──────────────────────────────────────────
-const VR_STEP_LABEL = {
-  idle: '대기 중',
-  tiles: '타일 좌표 생성 중...',
-  encoding: '인코딩 중... (439대 기준 수십 분 걸릴 수 있음)',
-  publish: '배포 발행 중...',
-  done: '완료 - 폰에 발행됨',
-  error: '실패',
-};
-
-// VIDEO_REPLACE_PROGRESS 메시지가 올 때마다(로그 한 줄 늘 때마다 포함) 그대로 다시 그린다 -
-// 로그가 최대 300줄로 서버에서 이미 잘려있어 매번 통째로 다시 그려도 부담 없다.
-function applyVideoReplaceProgress(data) {
-  const step = data.step || 'idle';
-  vrStatusEl.textContent = VR_STEP_LABEL[step] || step;
-  vrStatusEl.className = `video-replace-status step-${step}`;
-  if (data.error) vrStatusEl.textContent += ` - ${data.error}`;
-
-  vrLogEl.textContent = (data.log || []).join('\n');
-  vrLogEl.scrollTop = vrLogEl.scrollHeight;
-
-  const busy = step !== 'idle' && step !== 'done' && step !== 'error';
-  btnVrStart.disabled = busy;
-  btnVrCancel.disabled = !busy;
-}
-
-btnVrStart.addEventListener('click', () => {
-  const file = vrFileEl.files[0];
-  if (!file) {
-    window.alert('영상 파일을 선택하세요.');
+tgBlink.addEventListener('click', async () => {
+  const running = latest && latest.running;
+  if (running === 'pattern' || running === 'sequence') {
+    const res = await post(running === 'sequence' ? '/api/sequence/stop' : '/api/pattern/stop');
+    if (res) showToast('점멸을 정지했습니다');
     return;
   }
-  const mode = document.querySelector('input[name="vr-mode"]:checked').value;
-  const modeLabel = mode === 'frontback' ? '일반(1:1) 전/후면' : '등장방형';
-  if (!window.confirm(`${modeLabel} 모드로 "${file.name}"을(를) 439대 전체에 배포할까요? `
-    + '인코딩에 수십 분이 걸릴 수 있습니다.')) return;
-
-  const formData = new FormData();
-  formData.append('mode', mode);
-  formData.append('video', file);
-
-  btnVrStart.disabled = true;
-  vrStatusEl.textContent = '업로드 중...';
-  vrStatusEl.className = 'video-replace-status step-tiles';
-
-  fetch('/api/video/replace', { method: 'POST', body: formData })
-    .then((res) => res.json())
-    .then((data) => {
-      if (!data.ok) {
-        window.alert(`시작 실패: ${data.error}`);
-        btnVrStart.disabled = false;
-      }
-      // 성공하면 이후 진행상황은 VIDEO_REPLACE_PROGRESS WebSocket 메시지로 갱신된다.
-    })
-    .catch((err) => {
-      console.error('[HTTP] 영상 교체 요청 실패', err);
-      btnVrStart.disabled = false;
-    });
+  // 입력 중이던 값이 반영된 뒤 시작하도록 설정부터 저장한다.
+  if (!(await sendPatternConfig())) return;
+  const res = await post(blinkWay === 'sequence' ? '/api/sequence/start' : '/api/pattern/start');
+  if (res) showToast(blinkWay === 'sequence' ? '순차 점멸을 시작했습니다' : '전체 점멸을 시작했습니다');
 });
 
-btnVrCancel.addEventListener('click', () => {
-  if (!window.confirm('진행 중인 영상 교체를 취소할까요? 지금까지 인코딩한 내용은 버려집니다.')) return;
+// ── 재생목록
+// 큐 배열은 이 페이지가 들고 있다가 "저장"해야 서버에 반영된다(여러 값을 맞춘 뒤 한 번에 저장).
+// 간격/지속/다음 폰 간격은 화면에선 초, 저장은 서버 형식인 ms로 한다.
+function markPlaylistDirty() {
+  playlistDirty = true;
+  playlistUnsavedEl.hidden = false;
+}
 
-  fetch('/api/video/replace/cancel', { method: 'POST' })
-    .then((res) => res.json())
-    .then((data) => {
-      if (!data.ok) window.alert(`취소 실패: ${data.error || '알 수 없는 오류'}`);
-      // 실제 상태 전환은 VIDEO_REPLACE_PROGRESS로 반영된다.
-    })
-    .catch((err) => console.error('[HTTP] 영상 교체 취소 요청 실패', err));
-});
-
-// ── 패턴 재생목록 ──────────────────────────────────────
-// 큐 배열은 이 페이지가 들고 있다가 "저장" 버튼을 눌러야만 서버에 반영된다(입력마다
-// 자동저장 안 함) - 재생목록 편집은 색상/주기 등 즉시발행 필드들과 성격이 달라서
-// (여러 값을 한꺼번에 맞추고 나서 저장하는 게 자연스러움) 별도 흐름으로 뒀다.
 function createCueRow(cue, index) {
   const row = document.createElement('div');
   row.className = 'playlist-cue-row';
@@ -747,32 +606,14 @@ function createCueRow(cue, index) {
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = cue.color;
-  colorInput.disabled = !colorModeUsesColor(cue.colorMode || 'fixed');
-  // 랜덤(지정색) 큐는 색상 칸 툴팁으로 밝기 범위를, 너무 어두우면 노란 테두리로 경고를 보여준다.
-  const updateCueShadeHint = () => {
-    const note = shadeNote(colorModeSelect.value, colorInput.value);
-    colorInput.title = note ? note.text : '';
-    colorInput.classList.toggle('shade-too-dark', Boolean(note && note.warn));
-  };
-  colorInput.addEventListener('input', () => {
-    playlistCues[index].color = colorInput.value;
-    updateCueShadeHint();
-  });
+  colorInput.title = '색상';
 
   const colorModeSelect = document.createElement('select');
-  colorModeSelect.innerHTML =
-    '<option value="fixed">고정</option>'
+  colorModeSelect.innerHTML = '<option value="fixed">고정</option>'
     + '<option value="random">랜덤(컬러)</option>'
     + '<option value="randomGray">랜덤(흑백)</option>'
     + '<option value="randomShade">랜덤(지정색)</option>';
   colorModeSelect.value = cue.colorMode || 'fixed';
-  colorModeSelect.addEventListener('change', () => {
-    playlistCues[index].colorMode = colorModeSelect.value;
-    colorInput.disabled = !colorModeUsesColor(colorModeSelect.value);
-    saturationInput.disabled = colorModeSelect.value !== 'random';
-    updateCueShadeHint();
-  });
-  updateCueShadeHint();
 
   const saturationInput = document.createElement('input');
   saturationInput.type = 'number';
@@ -781,75 +622,96 @@ function createCueRow(cue, index) {
   saturationInput.step = '5';
   saturationInput.title = '채도(%) - 랜덤(컬러)일 때만 적용';
   saturationInput.value = cue.colorSaturation ?? 100;
-  saturationInput.disabled = colorModeSelect.value !== 'random';
+
+  // 랜덤(지정색) 큐는 색상 칸 툴팁으로 밝기 범위를, 너무 어두우면 노란 테두리로 경고한다.
+  const updateCueColorUi = () => {
+    const mode = colorModeSelect.value;
+    colorInput.dataset.usable = String(colorModeUsesColor(mode));
+    saturationInput.dataset.usable = String(mode === 'random');
+    const note = shadeNote(mode, colorInput.value);
+    colorInput.title = note ? note.text : '색상';
+    colorInput.classList.toggle('shade-too-dark', Boolean(note && note.warn));
+  };
+  colorInput.addEventListener('input', () => {
+    playlistCues[index].color = colorInput.value;
+    updateCueColorUi();
+    markPlaylistDirty();
+  });
+  colorModeSelect.addEventListener('change', () => {
+    playlistCues[index].colorMode = colorModeSelect.value;
+    updateCueColorUi();
+    updatePlaylistEditability();
+    markPlaylistDirty();
+  });
   saturationInput.addEventListener('change', () => {
     playlistCues[index].colorSaturation = Number(saturationInput.value);
+    markPlaylistDirty();
   });
+  updateCueColorUi();
 
-  const intervalInput = document.createElement('input');
-  intervalInput.type = 'number';
-  intervalInput.min = '50';
-  intervalInput.step = '50';
-  intervalInput.title = '주기(ms)';
-  intervalInput.value = cue.interval;
-  intervalInput.addEventListener('change', () => { playlistCues[index].interval = Number(intervalInput.value); });
-
-  const durationInput = document.createElement('input');
-  durationInput.type = 'number';
-  durationInput.min = '500';
-  durationInput.step = '500';
-  durationInput.title = '지속시간(ms) - 순차 점멸은 폰 한 대가 아니라 이 큐 전체가 지속되는 총 시간';
-  durationInput.value = cue.duration;
-  durationInput.addEventListener('change', () => { playlistCues[index].duration = Number(durationInput.value); });
-
-  const stepDelayInput = document.createElement('input');
-  stepDelayInput.type = 'number';
-  stepDelayInput.min = '0';
-  stepDelayInput.step = '50';
-  stepDelayInput.title = '폰 간 딜레이(ms) - 순차 점멸에만 쓰임';
-  stepDelayInput.value = cue.stepDelay;
-  stepDelayInput.addEventListener('change', () => { playlistCues[index].stepDelay = Number(stepDelayInput.value); });
+  const secInput = (field, min, step, title) => {
+    const el = document.createElement('input');
+    el.type = 'number';
+    el.min = min;
+    el.step = step;
+    el.title = title;
+    el.value = msToSec(cue[field]);
+    el.addEventListener('change', () => {
+      playlistCues[index][field] = secToMs(el.value);
+      markPlaylistDirty();
+    });
+    return el;
+  };
+  const intervalInput = secInput('interval', '0.05', '0.1', '깜빡임 간격(초)');
+  const durationInput = secInput('duration', '0.5', '0.5', '지속 시간(초) - 순차는 이 큐 전체가 지속되는 시간');
+  const stepDelayInput = secInput('stepDelay', '0', '0.05', '다음 폰까지 간격(초) - 순차일 때만 쓰임');
 
   const modeSelect = document.createElement('select');
-  modeSelect.innerHTML = '<option value="all">전체 점멸</option><option value="sequence">순차 점멸</option>';
+  modeSelect.innerHTML = '<option value="all">전체 동시</option><option value="sequence">순차</option>';
   modeSelect.value = cue.mode;
-  modeSelect.addEventListener('change', () => { playlistCues[index].mode = modeSelect.value; });
+  modeSelect.addEventListener('change', () => {
+    playlistCues[index].mode = modeSelect.value;
+    stepDelayInput.dataset.usable = String(modeSelect.value === 'sequence');
+    updatePlaylistEditability();
+    markPlaylistDirty();
+  });
+  stepDelayInput.dataset.usable = String(cue.mode === 'sequence');
 
   const moveUpBtn = document.createElement('button');
-  moveUpBtn.className = 'btn-small';
+  moveUpBtn.type = 'button';
   moveUpBtn.textContent = '↑';
   moveUpBtn.title = '위로 이동';
-  moveUpBtn.disabled = index === 0;
   moveUpBtn.addEventListener('click', () => {
     [playlistCues[index - 1], playlistCues[index]] = [playlistCues[index], playlistCues[index - 1]];
+    markPlaylistDirty();
     renderPlaylistCues();
   });
 
   const moveDownBtn = document.createElement('button');
-  moveDownBtn.className = 'btn-small';
+  moveDownBtn.type = 'button';
   moveDownBtn.textContent = '↓';
   moveDownBtn.title = '아래로 이동';
-  moveDownBtn.disabled = index === playlistCues.length - 1;
   moveDownBtn.addEventListener('click', () => {
     [playlistCues[index], playlistCues[index + 1]] = [playlistCues[index + 1], playlistCues[index]];
+    markPlaylistDirty();
     renderPlaylistCues();
   });
 
   const deleteBtn = document.createElement('button');
-  deleteBtn.className = 'btn-small btn-danger';
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'red';
   deleteBtn.textContent = '삭제';
   deleteBtn.addEventListener('click', () => {
     playlistCues.splice(index, 1);
+    markPlaylistDirty();
     renderPlaylistCues();
   });
 
   const label = document.createElement('span');
-  label.textContent = `#${index + 1}`;
+  label.textContent = String(index + 1);
 
-  row.append(
-    label, colorInput, colorModeSelect, saturationInput, intervalInput, durationInput, stepDelayInput, modeSelect,
-    moveUpBtn, moveDownBtn, deleteBtn,
-  );
+  row.append(label, colorInput, colorModeSelect, saturationInput, intervalInput, durationInput, stepDelayInput,
+    modeSelect, moveUpBtn, moveDownBtn, deleteBtn);
   return row;
 }
 
@@ -870,43 +732,46 @@ function renderPlaylistCues() {
   updatePlaylistEditability();
 }
 
-// 재생 중엔 모든 편집 요소(입력/추가/삭제/저장/이동)를 막는다 - 서버도 같은 규칙을
-// /api/pattern/playlist(저장)에서 강제하지만, 여기서도 막아야 헷갈리지 않는다.
-// renderPlaylistCues() 직후뿐 아니라 재생→정지 전환 시(applyPlaylistProgress)에도
-// DOM을 다시 그리지 않고 이 함수만 불리므로, 재생 중 꺼뒀던 요소들을 여기서 직접
-// 다시 켜줘야 한다 - 예전엔 "재생 중이 아니면 아무것도 안 건드림"으로 해뒀었는데,
-// 그러면 정지 후에도 편집이 계속 막힌 채로 남는 버그가 있었다(재생→정지 후 수정 불가,
-// 2026-09). ↑/↓ 이동 버튼은 무조건 활성화하지 않고 맨 위/아래 큐 기준으로 다시 계산한다.
+// 재생 중엔 편집 요소를 전부 막는다(서버도 저장을 거부한다). 재생→정지 때는 DOM을 다시
+// 그리지 않고 이 함수만 불리므로, 꺼뒀던 요소를 여기서 직접 다시 켠다. 이 큐에서 쓰이지 않는
+// 칸(data-usable=false: 고정이 아닌데 색상, 랜덤(컬러)가 아닌데 채도, 순차가 아닌데 다음 폰)도 끈다.
 function updatePlaylistEditability() {
-  const disabled = playlistPlaying;
-  const rows = [...playlistCuesEl.querySelectorAll('.playlist-cue-row')];
+  const locked = playlistPlaying;
+  const rows = [...playlistCuesEl.querySelectorAll('.playlist-cue-row[data-index]')];
   rows.forEach((row, index) => {
-    row.querySelectorAll('input, select, button').forEach((el) => { el.disabled = disabled; });
-    if (!disabled) {
+    row.querySelectorAll('input, select, button').forEach((el) => {
+      el.disabled = locked || el.dataset.usable === 'false';
+    });
+    if (!locked) {
       const buttons = row.querySelectorAll('button');
-      buttons[0].disabled = index === 0; // 위로 이동
-      buttons[1].disabled = index === rows.length - 1; // 아래로 이동
+      buttons[0].disabled = index === 0;
+      buttons[1].disabled = index === rows.length - 1;
     }
   });
-  btnPlaylistAddCue.disabled = disabled;
-  btnPlaylistSave.disabled = disabled;
-  btnPlaylistPlay.disabled = disabled || playlistCues.length === 0;
-  btnPlaylistStop.disabled = !disabled;
+  btnPlaylistAddCue.disabled = locked;
+  btnPlaylistSave.disabled = locked;
 }
 
 function applyPlaylistProgress(data) {
   playlistPlaying = Boolean(data.playing);
   playlistCurrentCueIndex = typeof data.currentCueIndex === 'number' ? data.currentCueIndex : -1;
-
-  playlistStatusEl.textContent = playlistPlaying
-    ? `재생 중 (큐 ${playlistCurrentCueIndex + 1}/${playlistCues.length})`
-    : '재생 안 함';
-  playlistStatusEl.className = playlistPlaying ? 'video-replace-status step-encoding' : 'video-replace-status';
-
+  playlistStatusEl.hidden = !playlistPlaying;
+  playlistStatusEl.textContent = playlistPlaying && playlistCurrentCueIndex >= 0
+    ? `재생 중 · ${playlistCurrentCueIndex + 1}/${playlistCues.length}`
+    : '재생 중';
   playlistCuesEl.querySelectorAll('.playlist-cue-row').forEach((row) => {
     row.classList.toggle('active', playlistPlaying && Number(row.dataset.index) === playlistCurrentCueIndex);
   });
   updatePlaylistEditability();
+  setToggle(tgPlaylist, null, playlistPlaying, '■ 재생목록 정지', '▶ 재생목록 재생');
+}
+
+async function savePlaylist() {
+  const res = await post('/api/pattern/playlist', { cues: playlistCues });
+  if (!res) return false;
+  playlistDirty = false;
+  playlistUnsavedEl.hidden = true;
+  return true;
 }
 
 btnPlaylistAddCue.addEventListener('click', () => {
@@ -914,42 +779,540 @@ btnPlaylistAddCue.addEventListener('click', () => {
     color: '#ffffff', colorMode: 'fixed', colorSaturation: 100,
     interval: 500, duration: 3000, stepDelay: 200, mode: 'all',
   });
+  markPlaylistDirty();
   renderPlaylistCues();
 });
 
-btnPlaylistSave.addEventListener('click', () => {
-  postJson('/api/pattern/playlist', { cues: playlistCues })
-    .then((res) => res.json())
-    .then((data) => {
-      if (!data.ok) window.alert(`저장 실패: ${data.error}`);
-    })
-    .catch((err) => console.error('[HTTP] 재생목록 저장 실패', err));
+btnPlaylistSave.addEventListener('click', async () => {
+  if (await savePlaylist()) showToast('재생목록을 저장했습니다');
 });
 
-btnPlaylistPlay.addEventListener('click', () => {
-  fetch('/api/pattern/playlist/play', { method: 'POST' })
-    .then((res) => res.json())
-    .then((data) => {
-      if (!data.ok) window.alert(`재생 실패: ${data.error}`);
-    })
-    .catch((err) => console.error('[HTTP] 재생목록 재생 요청 실패', err));
+tgPlaylist.addEventListener('click', async () => {
+  if (playlistPlaying) {
+    if (await post('/api/pattern/playlist/stop')) showToast('재생목록을 정지했습니다');
+    return;
+  }
+  if (playlistDirty) {
+    const ok = await confirmModal({
+      title: '저장하지 않은 변경이 있습니다',
+      body: '재생목록은 저장된 내용으로 재생됩니다. 지금 편집한 내용을 저장하고 재생할까요?',
+      okLabel: '저장하고 재생',
+    });
+    if (!ok || !(await savePlaylist())) return;
+  }
+  if (await post('/api/pattern/playlist/play')) showToast('재생목록 재생을 시작했습니다');
 });
 
-btnPlaylistStop.addEventListener('click', () => {
-  fetch('/api/pattern/playlist/stop', { method: 'POST' })
-    .catch((err) => console.error('[HTTP] 재생목록 정지 요청 실패', err));
+// ── 텍스트
+function renderTextPanel(data) {
+  if (data.textScrollConfig && !editingTextConfig) {
+    const c = data.textScrollConfig;
+    textContentEl.value = c.text;
+    textFontEl.value = c.font;
+    textFontSizeEl.value = c.fontSize;
+    textColorEl.value = c.color;
+    textBgColorEl.value = c.bgColor;
+    textAlignEl.value = c.align;
+    textDirectionEl.value = c.direction;
+    textSpeedEl.value = c.speed;
+  }
+  setToggle(tgText, rsText, data.running === 'textScroll', '■ 텍스트 정지', '▶ 텍스트 시작');
+}
+
+function sendTextConfig() {
+  return post('/api/text/config', {
+    text: textContentEl.value,
+    font: textFontEl.value,
+    fontSize: Number(textFontSizeEl.value),
+    color: textColorEl.value,
+    bgColor: textBgColorEl.value,
+    align: textAlignEl.value,
+    direction: textDirectionEl.value,
+    speed: Number(textSpeedEl.value),
+  });
+}
+
+[textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl, textAlignEl, textDirectionEl, textSpeedEl]
+  .forEach((el) => {
+    el.addEventListener('focus', () => { editingTextConfig = true; });
+    el.addEventListener('blur', () => { editingTextConfig = false; });
+    el.addEventListener('change', sendTextConfig);
+  });
+
+tgText.addEventListener('click', async () => {
+  if (latest && latest.running === 'textScroll') {
+    if (await post('/api/text/stop')) showToast('텍스트를 정지했습니다');
+    return;
+  }
+  if (!(await sendTextConfig())) return;
+  if (await post('/api/text/start')) showToast('텍스트를 시작했습니다');
 });
 
-// 페이지 로드 시 저장된 재생목록/재생상태를 불러온다.
+// ── 문제 알림 / 필터
+function renderAlerts() {
+  const shown = PROBLEMS.filter((p) => problemIds[p.key].length > 0);
+  const signature = shown.map((p) => `${p.key}:${problemIds[p.key].length}`).join('|');
+  if (activeFilter && !shown.some((p) => p.key === activeFilter)) activeFilter = null;
+  if (signature === lastAlertsSignature) {
+    syncAlertPressed();
+    return;
+  }
+  lastAlertsSignature = signature;
+  alertsEl.innerHTML = '';
+  if (shown.length === 0) {
+    const ok = document.createElement('span');
+    ok.className = 'chip ok';
+    ok.innerHTML = '<i class="mini"></i>';
+    ok.append('모든 폰 정상');
+    alertsEl.appendChild(ok);
+  } else {
+    shown.forEach((p) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `chip k-${p.key}`;
+      chip.dataset.filter = p.key;
+      chip.innerHTML = `<i class="${p.icon}"></i>`;
+      const count = document.createElement('b');
+      count.textContent = String(problemIds[p.key].length);
+      chip.append(`${p.label} `, count);
+      alertsEl.appendChild(chip);
+    });
+  }
+  syncAlertPressed();
+}
+
+function syncAlertPressed() {
+  alertsEl.classList.toggle('filtering', Boolean(activeFilter));
+  alertsEl.querySelectorAll('[data-filter]').forEach((c) => {
+    c.setAttribute('aria-pressed', String(c.dataset.filter === activeFilter));
+  });
+}
+
+// 누른 알림의 폰만 그리드에 남기고, 그 번호 목록을 보여준다.
+function applyFilter() {
+  const set = activeFilter ? new Set(problemIds[activeFilter]) : null;
+  Object.entries(cellRefs || {}).forEach(([id, cell]) => {
+    cell.classList.toggle('dim', Boolean(set) && !set.has(id));
+  });
+  idListEl.hidden = !activeFilter;
+  if (!activeFilter) return;
+  const p = PROBLEMS.find((x) => x.key === activeFilter);
+  const chip = alertsEl.querySelector(`[data-filter="${activeFilter}"]`);
+  if (chip) idListEl.style.setProperty('--k', getComputedStyle(chip).getPropertyValue('--k'));
+  idListTitleEl.textContent = `${p.title} ${problemIds[activeFilter].length}대`;
+  idListNumsEl.textContent = problemIds[activeFilter].join(', ');
+}
+
+alertsEl.addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-filter]');
+  if (!chip) return;
+  activeFilter = activeFilter === chip.dataset.filter ? null : chip.dataset.filter;
+  syncAlertPressed();
+  applyFilter();
+});
+
+// 대시보드는 폐쇄망 http로 열리므로 navigator.clipboard(보안 연결 전용)가 없을 수 있다 - 그때는
+// 예전 방식(execCommand)으로 복사하고, 그것도 안 되면 번호를 선택해 둔다.
+$('btn-copy-ids').addEventListener('click', () => {
+  const text = idListNumsEl.textContent;
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    ta.remove();
+    if (copied) {
+      showToast('폰 번호를 복사했습니다');
+    } else {
+      const r = document.createRange();
+      r.selectNodeContents(idListNumsEl);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      showToast('번호를 선택했습니다 - Ctrl+C로 복사하세요');
+    }
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => showToast('폰 번호를 복사했습니다'), fallback);
+  } else {
+    fallback();
+  }
+});
+
+$('btn-fill-ids').addEventListener('click', () => {
+  restartDeviceIdsEl.value = idListNumsEl.textContent;
+  adminEl.open = true;
+  restartDeviceIdsEl.scrollIntoView({ block: 'center' });
+  restartDeviceIdsEl.focus();
+  showToast('관리 > 재시작·재부팅 칸에 번호를 넣었습니다');
+});
+
+// ── 관리: 운영 시간 (24시간 형식 선택 - PC 언어 설정과 무관하게 같게 보이도록)
+function fillTimeOptions(select, count) {
+  for (let i = 0; i < count; i += 1) {
+    const v = String(i).padStart(2, '0');
+    select.add(new Option(v, v));
+  }
+}
+fillTimeOptions(scheduleStartH, 24);
+fillTimeOptions(scheduleEndH, 24);
+fillTimeOptions(scheduleStartM, 60);
+fillTimeOptions(scheduleEndM, 60);
+
+function setTimePick(hEl, mEl, hhmm) {
+  const [h, m] = hhmm.split(':');
+  hEl.value = h;
+  mEl.value = m;
+}
+
+function renderSchedule(s) {
+  if (!scheduleDirty) {
+    scheduleEnabledEl.checked = s.enabled;
+    setTimePick(scheduleStartH, scheduleStartM, s.start);
+    setTimePick(scheduleEndH, scheduleEndM, s.end);
+    scheduleDayBtns.forEach((b) => b.setAttribute('aria-pressed', String(s.closedDays.includes(Number(b.dataset.day)))));
+  }
+
+  const nextText = s.nextAction
+    ? `다음 ${s.nextAction.atText} ${s.nextAction.type === 'play' ? '재생' : '절전'}`
+    : '';
+  if (!s.enabled) {
+    setPill(stSchedEl, '', '꺼짐');
+    setPill(sumSchedEl, '', '운영 시간 꺼짐');
+  } else {
+    setPill(stSchedEl, 'on', `켜짐${nextText ? ` · ${nextText}` : ''}`);
+    setPill(sumSchedEl, 'on', '운영 시간 켜짐');
+  }
+
+  const parts = [];
+  if (s.enabled) {
+    parts.push(s.operating ? '지금은 운영 중입니다' : '지금은 운영 시간이 아닙니다');
+    if (s.waitingForDeploy) parts.push('영상 교체가 끝나면 재생을 시작합니다');
+  } else {
+    parts.push('타이머를 켜면 저장하는 즉시 지금 시각 기준으로 적용됩니다');
+  }
+  scheduleStatusEl.textContent = parts.join(' · ');
+}
+
+[scheduleEnabledEl, scheduleStartH, scheduleStartM, scheduleEndH, scheduleEndM].forEach((el) => {
+  el.addEventListener('change', () => { scheduleDirty = true; });
+});
+scheduleDayBtns.forEach((b) => b.addEventListener('click', () => {
+  b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+  scheduleDirty = true;
+}));
+
+btnScheduleSave.addEventListener('click', async () => {
+  const body = {
+    enabled: scheduleEnabledEl.checked,
+    start: `${scheduleStartH.value}:${scheduleStartM.value}`,
+    end: `${scheduleEndH.value}:${scheduleEndM.value}`,
+    closedDays: scheduleDayBtns.filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => Number(b.dataset.day)),
+  };
+  const turningOn = body.enabled && !(latest && latest.schedule && latest.schedule.enabled);
+  if (turningOn) {
+    const ok = await confirmModal({
+      title: '운영 시간 타이머를 켤까요?',
+      body: `${body.start}~${body.end}로 저장하면 지금 시각 기준으로 바로 적용됩니다.\n운영 시간이면 영상을 재생하고, 아니면 절전으로 바꿉니다.`,
+      okLabel: '켜고 저장',
+    });
+    if (!ok) return;
+  }
+  if (await post('/api/schedule', body)) {
+    scheduleDirty = false;
+    showToast('운영 시간을 저장했습니다');
+  }
+});
+
+// ── 관리: 앱 버전
+function renderVersion(counts, ota, latestVersionCode) {
+  if (typeof latestVersionCode !== 'number') {
+    verLatestEl.textContent = '정보 없음';
+    [verOkEl, verOldEl, verUnknownEl].forEach((el) => { el.textContent = '-'; });
+    setPill(stVersionEl, '', '버전 정보 없음');
+    setPill(sumVersionEl, '', '앱 버전 정보 없음');
+  } else {
+    verLatestEl.textContent = `v${latestVersionCode}`;
+    verOkEl.textContent = `${counts.latest}대`;
+    verOldEl.textContent = `${counts.old}대`;
+    verOldEl.style.color = counts.old > 0 ? 'var(--warn)' : '';
+    verUnknownEl.textContent = `${counts.unknown}대`;
+    if (counts.old > 0) {
+      setPill(stVersionEl, 'warn', `구버전 ${counts.old}대`);
+      setPill(sumVersionEl, 'warn', `구버전 앱 ${counts.old}대`);
+    } else if (counts.latest === 0) {
+      // 연결된 폰이 없으면 버전을 알 수 없다 - "모두 최신"으로 오해하지 않게
+      setPill(stVersionEl, '', '확인 불가');
+      setPill(sumVersionEl, '', '앱 버전 확인 불가');
+    } else {
+      setPill(stVersionEl, 'on', '구버전 없음');
+      setPill(sumVersionEl, 'on', '앱 구버전 없음');
+    }
+  }
+  const busy = ota.downloading + ota.installing;
+  otaStatusEl.textContent = busy > 0 || ota.failed > 0
+    ? `앱 업데이트 진행: 받는 중 ${ota.downloading} · 설치 중 ${ota.installing} · 완료 ${ota.done} · 실패 ${ota.failed}`
+    : '';
+}
+
+btnVersionToggle.addEventListener('click', () => {
+  versionCheckEnabled = !versionCheckEnabled;
+  btnVersionToggle.classList.toggle('active', versionCheckEnabled);
+  btnVersionToggle.textContent = versionCheckEnabled ? '그리드 구버전 표시 끄기' : '그리드에 구버전 폰 표시';
+  // 다음 STATUS_UPDATE(1초 안)에 파란 테두리로 반영된다.
+});
+
+// ── 관리: 영상 교체
+const VR_STEPS = ['tiles', 'encoding', 'publish'];
+
+function renderReplace(data, fileCounts) {
+  const vr = data.videoReplace || { step: 'idle' };
+  const deploy = data.deploy;
+  const running = Boolean(data.replacing);
+
+  // 단계: 배포 중이면 "폰 배포", 아니면 서버가 알려준 단계
+  const stepNow = deploy ? 'publish' : vr.step;
+  const nowIdx = VR_STEPS.indexOf(stepNow);
+  vrStepEls.forEach((li, i) => {
+    li.classList.toggle('done', running && nowIdx > i);
+    li.classList.toggle('now', running && nowIdx === i);
+  });
+  replaceProgressEl.hidden = !running;
+  btnVrCancel.hidden = !vr.running; // 취소는 서버 쪽 교체 작업(타일·인코딩)에만 - 폰 배포는 취소 대상 아님
+
+  vrNumsEl.innerHTML = '';
+  let pct = 0;
+  let note = '';
+  const addNum = (label, value) => {
+    const span = document.createElement('span');
+    const b = document.createElement('b');
+    b.textContent = value;
+    span.append(`${label} `, b);
+    vrNumsEl.appendChild(span);
+  };
+  if (deploy) {
+    const c = deploy.counts;
+    if (deploy.finished) {
+      addNum('폰 배포', '완료 - 재검증 중');
+      pct = 100;
+    } else {
+      addNum('배포 완료', `${deploy.settled} / ${deploy.total}대`);
+      addNum('받는 중', `${deploy.inFlight}대`);
+      addNum('대기', `${deploy.queued}대`);
+      pct = deploy.total > 0 ? (deploy.settled / deploy.total) * 100 : 0;
+    }
+    if (c.failed + c.mismatch + c.timeout > 0) addNum('실패·시간초과', `${c.failed + c.mismatch + c.timeout}대`);
+    note = '폰마다 새 영상 파일을 받는 중입니다(동시 20대씩).';
+  } else if (vr.step === 'encoding') {
+    addNum('인코딩', vr.encodeTotal > 0 ? `${vr.encodeDone} / ${vr.encodeTotal} 타일` : '시작 중');
+    addNum('경과', formatDuration(vr.elapsedMs));
+    addNum('예상 남은 시간', vr.etaMs != null ? `약 ${formatDuration(vr.etaMs)}` : '계산 중');
+    pct = vr.encodeTotal > 0 ? (vr.encodeDone / vr.encodeTotal) * 100 : 0;
+    note = '남은 시간은 지금까지의 인코딩 속도로 계산한 추정치입니다.';
+  } else if (vr.step === 'tiles') {
+    addNum('타일 좌표 계산 중 · 경과', formatDuration(vr.elapsedMs));
+    note = '곧 인코딩이 시작됩니다.';
+  } else if (vr.step === 'publish') {
+    addNum('폰 배포', '시작 중');
+  }
+  vrBarEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  vrProgressNoteEl.textContent = note;
+
+  // 상태 표시
+  if (running) {
+    const label = deploy ? `폰 배포 ${deploy.settled}/${deploy.total}`
+      : vr.step === 'encoding' && vr.encodeTotal > 0 ? `인코딩 ${vr.encodeDone}/${vr.encodeTotal}`
+        : '준비 중';
+    setPill(stReplaceEl, 'busy', `교체 중 · ${label}`);
+    setPill(sumReplaceEl, 'busy', `영상 교체 중 · ${label}`);
+  } else if (vr.step === 'error') {
+    setPill(stReplaceEl, 'err', '실패');
+    setPill(sumReplaceEl, 'err', '영상 교체 실패');
+  } else if (vr.step === 'done') {
+    setPill(stReplaceEl, 'on', '최근 교체 완료');
+    setPill(sumReplaceEl, '', '영상 교체 대기');
+  } else {
+    setPill(stReplaceEl, '', '대기 중');
+    setPill(sumReplaceEl, '', '영상 교체 대기');
+  }
+
+  vrErrorEl.hidden = vr.step !== 'error';
+  vrErrorEl.textContent = vr.step === 'error' ? `실패: ${vr.error || '알 수 없는 오류'} - 아래 로그를 확인하세요` : '';
+  // 오류가 새로 나면 로그를 자동으로 펼친다
+  if (vr.step === 'error' && vrLastStep !== 'error') vrLogWrap.open = true;
+  vrLastStep = vr.step;
+
+  // 시작 조건: 영상 모드 + 교체/배포 중 아님
+  const inVideoMode = data.currentMode === 'video' && !data.idleMode;
+  btnVrStart.disabled = running || !inVideoMode;
+  if (!running && !inVideoMode) {
+    replaceRuleEl.className = 'note warn';
+    replaceRuleEl.textContent = '지금은 영상 모드가 아닙니다. 영상 모드로 바꾼 뒤 교체할 수 있습니다.';
+  } else {
+    replaceRuleEl.className = 'note';
+    replaceRuleEl.textContent = '영상 모드에서만 교체할 수 있습니다. 교체하는 동안에는 영상 재생과 모드 변경이 막히고, 재생 중이면 정지됩니다.';
+  }
+
+  fsOkEl.textContent = String(fileCounts.ok);
+  fsMisEl.textContent = String(fileCounts.mismatch);
+  fsNaEl.textContent = String(fileCounts.unknown);
+}
+
+// VIDEO_REPLACE_PROGRESS - 로그 한 줄이 늘 때마다 온다(로그는 서버에서 최대 300줄로 잘림).
+function applyVideoReplaceProgress(data) {
+  const atBottom = vrLogEl.scrollTop + vrLogEl.clientHeight >= vrLogEl.scrollHeight - 4;
+  vrLogEl.textContent = (data.log || []).join('\n');
+  if (atBottom) vrLogEl.scrollTop = vrLogEl.scrollHeight;
+}
+
+btnVrStart.addEventListener('click', async () => {
+  const file = vrFileEl.files[0];
+  if (!file) {
+    showToast('교체할 영상 파일을 먼저 고르세요', true);
+    return;
+  }
+  const modeLabel = vrModeEl.options[vrModeEl.selectedIndex].textContent;
+  const ok = await confirmModal({
+    title: '영상을 교체할까요?',
+    body: `"${file.name}"(${modeLabel})을(를) 439대 전체에 배포합니다.\n인코딩에 수십 분이 걸리고, 끝날 때까지 영상 재생과 모드 변경이 막힙니다. 재생 중이면 정지됩니다.`,
+    okLabel: '교체 시작',
+  });
+  if (!ok) return;
+
+  const formData = new FormData();
+  formData.append('mode', vrModeEl.value);
+  formData.append('video', file);
+  btnVrStart.disabled = true;
+  showToast('영상을 올리는 중입니다...');
+  try {
+    const res = await fetch('/api/video/replace', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      showToast(`교체를 시작하지 못했습니다: ${data.error || '알 수 없는 오류'}`, true);
+      btnVrStart.disabled = false;
+      return;
+    }
+    showToast('영상 교체를 시작했습니다');
+  } catch (err) {
+    console.error('[HTTP] 영상 교체 요청 실패', err);
+    showToast('영상을 올리지 못했습니다. 네트워크를 확인하세요.', true);
+    btnVrStart.disabled = false;
+  }
+});
+
+btnVrCancel.addEventListener('click', async () => {
+  const ok = await confirmModal({
+    title: '영상 교체를 취소할까요?',
+    body: '지금까지 인코딩한 내용은 버려집니다. 폰에는 아무것도 바뀌지 않습니다.',
+    okLabel: '교체 취소',
+    danger: true,
+  });
+  if (ok && (await post('/api/video/replace/cancel'))) showToast('영상 교체를 취소했습니다');
+});
+
+// ── 관리: 재시작 / 재부팅
+// 쉼표로 구분된 번호("1, 2,3")를 정수 배열로 - 비었으면 null, 잘못된 값이 섞이면 undefined.
+function parseDeviceIds(text) {
+  const parts = text.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  if (parts.length === 0) return null;
+  const ids = parts.map(Number);
+  if (ids.some((n) => !Number.isInteger(n) || n <= 0)) return undefined;
+  return ids;
+}
+
+function readSelectedDeviceIds(emptyMessage) {
+  const ids = parseDeviceIds(restartDeviceIdsEl.value);
+  if (ids === undefined) {
+    showToast('폰 번호는 쉼표로 구분된 숫자로 입력하세요 (예: 12, 15, 203)', true);
+    restartDeviceIdsEl.focus();
+    return null;
+  }
+  if (ids === null) {
+    showToast(emptyMessage, true);
+    restartDeviceIdsEl.focus();
+    return null;
+  }
+  return ids;
+}
+
+btnRestartSelected.addEventListener('click', async () => {
+  const ids = readSelectedDeviceIds('재시작할 폰 번호를 먼저 입력하세요');
+  if (!ids) return;
+  const ok = await confirmModal({
+    title: '앱을 재시작할까요?',
+    body: `${ids.length}대: ${ids.join(', ')}\n앱만 껐다 켭니다. 몇 초 뒤 다시 연결됩니다.`,
+    okLabel: '앱 재시작',
+  });
+  if (ok && (await post('/api/restart-app', { targetDeviceIds: ids }))) showToast(`${ids.length}대 앱을 재시작했습니다`);
+});
+
+btnRestartAll.addEventListener('click', async () => {
+  const ok = await confirmModal({
+    title: '전체 앱을 재시작할까요?',
+    body: '439대 모두 앱을 껐다 켭니다. 그동안 구체 화면이 잠깐 끊깁니다.',
+    okLabel: '전체 앱 재시작',
+  });
+  if (ok && (await post('/api/restart-app'))) showToast('전체 앱을 재시작했습니다');
+});
+
+// 재부팅은 전체 버튼이 없다(서버도 대상 번호를 필수로 받는다).
+btnRebootSelected.addEventListener('click', async () => {
+  const ids = readSelectedDeviceIds('재부팅할 폰 번호를 먼저 입력하세요');
+  if (!ids) return;
+  const ok = await confirmModal({
+    title: '폰을 재부팅할까요?',
+    body: `${ids.length}대: ${ids.join(', ')}\n재부팅하는 1~2분 동안 이 폰들의 화면이 꺼지고, 다시 켜지면 앱이 자동으로 실행됩니다.`,
+    okLabel: '재부팅',
+    danger: true,
+  });
+  if (ok && (await post('/api/reboot-device', { targetDeviceIds: ids }))) {
+    showToast(`${ids.length}대에 재부팅 명령을 보냈습니다 (1~2분 소요)`);
+  }
+});
+
+// ── ID 표시 - duration 0 = 끌 때까지 계속 표시
+btnShowId.addEventListener('click', async () => {
+  const turningOn = !idShowing;
+  const res = await post(turningOn ? '/api/show-id' : '/api/hide-id', turningOn ? { duration: 0 } : undefined);
+  if (!res) return;
+  idShowing = turningOn;
+  btnShowId.textContent = idShowing ? 'ID 끄기' : 'ID 표시';
+  btnShowId.classList.toggle('active', idShowing);
+});
+
+// ── 연결
+function connect() {
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${protocol}://${location.host}`);
+  ws.addEventListener('message', (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'STATUS_UPDATE') applyStatusUpdate(data);
+    if (data.type === 'VIDEO_REPLACE_PROGRESS') applyVideoReplaceProgress(data);
+    if (data.type === 'PATTERN_PLAYLIST_PROGRESS') applyPlaylistProgress(data);
+  });
+  ws.addEventListener('close', () => {
+    nowTitleEl.textContent = '서버 연결 끊김 - 다시 연결 중...';
+    nowDotEl.className = 'now-dot idle';
+    setTimeout(connect, RECONNECT_DELAY_MS);
+  });
+  ws.addEventListener('error', () => ws.close());
+}
+
+// 페이지를 열 때 저장된 재생목록과 재생 상태를 불러온다.
 fetch('/api/pattern/playlist')
   .then((res) => res.json())
   .then((data) => {
     if (!data.ok) return;
     playlistCues = data.patternPlaylist.cues || [];
-    playlistPlaying = Boolean(data.playlistState && data.playlistState.playing);
-    playlistCurrentCueIndex = data.playlistState ? data.playlistState.currentCueIndex : -1;
     renderPlaylistCues();
+    applyPlaylistProgress(data.playlistState || {});
   })
   .catch((err) => console.error('[HTTP] 재생목록 조회 실패', err));
 
+// 주소 끝에 #admin을 붙여 열면 관리 영역을 펼친 채로 시작한다(즐겨찾기용).
+if (location.hash === '#admin') adminEl.open = true;
+
+applyPatternKindUi();
 connect();

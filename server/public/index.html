@@ -3,225 +3,306 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MediaSphere 대시보드</title>
+  <title>소소익선 대시보드</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="header">
-    <h1>MediaSphere</h1>
-    <div class="header-info">
-      <span id="online-count">온라인: 000 / 000</span>
-      <span id="file-status-count" class="file-status-count">파일: 정상 0 / 불일치 0 / 무응답 0</span>
-      <span id="player-error-count" class="file-status-count player-error-count">재생오류 0</span>
-      <span id="schedule-badge" class="file-status-count">타이머 꺼짐</span>
-      <span id="battery-status-count" class="file-status-count">배터리: 정상 0 / 낮음 0 / 미충전 0 / 확인불가 0</span>
-      <span id="deploy-progress" class="file-status-count deploy-progress" hidden>
-        <span id="deploy-progress-text"></span>
-        <progress id="deploy-progress-bar" value="0" max="1"></progress>
-      </span>
-      <button id="btn-show-id" class="btn-small">ID 표시</button>
-      <span id="play-state" class="play-state stopped">■ 정지</span>
-      <span id="timecode" class="timecode"></span>
-      <details class="header-details">
-        <summary>OTA/버전</summary>
-        <div class="header-details-content">
-          <span id="ota-status-count" class="file-status-count">OTA: 대기 0 / 다운 0 / 설치 0 / 완료 0 / 실패 0</span>
-          <span id="version-status-count" class="file-status-count">버전: 확인 안 함</span>
-          <button id="btn-version-toggle" class="btn-small">버전 확인 켜기</button>
-        </div>
-      </details>
-    </div>
-  </header>
-
-  <section class="controls">
-    <div class="mode-toggle">
-      <button id="mode-video" class="mode-btn active">영상 모드</button>
-      <button id="mode-pattern" class="mode-btn">패턴 모드</button>
-      <button id="mode-text" class="mode-btn">텍스트 모드</button>
-      <button id="btn-idle" class="mode-btn btn-idle">절전 모드</button>
-    </div>
-    <span id="mode-locked-note" class="play-blocked-note" hidden></span>
-
-    <div id="video-controls" class="control-group">
-      <button id="btn-play" class="btn btn-play">영상 재생</button>
-      <button id="btn-stop" class="btn btn-stop">영상 정지</button>
-      <span id="play-blocked-note" class="play-blocked-note" hidden>영상 배포 중에는 재생할 수 없습니다</span>
-    </div>
-
-    <div id="pattern-controls" class="control-group pattern-controls" hidden>
-      <label class="pattern-field">
-        색상
-        <input type="color" id="pattern-color" value="#ffffff" />
-      </label>
-      <label class="pattern-field">
-        색상 모드
-        <select id="pattern-color-mode">
-          <option value="fixed">고정</option>
-          <option value="random">랜덤(컬러)</option>
-          <option value="randomGray">랜덤(흑백)</option>
-          <option value="randomShade">랜덤(지정색)</option>
-        </select>
-      </label>
-      <label class="pattern-field" title="랜덤(컬러)일 때만 적용 - 낮을수록 파스텔톤에 가까워집니다">
-        채도(%)
-        <input type="number" id="pattern-color-saturation" min="0" max="100" step="5" value="100" />
-      </label>
-      <span id="pattern-shade-note" class="pattern-shade-note" hidden></span>
-      <label class="pattern-field">
-        주기(ms)
-        <input type="number" id="pattern-interval" min="50" step="50" value="500" />
-      </label>
-      <label class="pattern-field">
-        지속시간(ms)
-        <input type="number" id="pattern-duration" min="0" step="500" value="3000" />
-      </label>
-      <label class="pattern-field">
-        폰 간 딜레이 (ms)
-        <input type="number" id="pattern-step-delay" min="0" step="50" value="200" />
-      </label>
-      <button id="btn-pattern-play" class="btn btn-play">전체 점멸 시작</button>
-      <button id="btn-pattern-stop" class="btn btn-stop">전체 점멸 정지</button>
-      <button id="btn-sequence-play" class="btn btn-play">순차 점멸 시작</button>
-      <button id="btn-sequence-stop" class="btn btn-stop">순차 점멸 정지</button>
-
-      <div class="playlist-section">
-        <h3>재생목록</h3>
-        <div class="playlist-cue-header">
-          <span class="playlist-col-index">#</span>
-          <span class="playlist-col-color">색상</span>
-          <span class="playlist-col-mode">색상모드</span>
-          <span class="playlist-col-num" title="랜덤(컬러)일 때만 적용">채도(%)</span>
-          <span class="playlist-col-num">주기(ms)</span>
-          <span class="playlist-col-num" title="순차 점멸은 폰 한 대가 아니라 이 큐 전체가 지속되는 총 시간입니다">지속시간(ms)</span>
-          <span class="playlist-col-num" title="폰 간 딜레이(ms) - 순차 점멸 전용">딜레이(ms)</span>
-          <span class="playlist-col-mode">모드</span>
-        </div>
-        <div id="playlist-cues" class="playlist-cues"></div>
-        <div class="video-replace-row">
-          <button id="btn-playlist-add-cue" class="btn-small">+ 큐 추가</button>
-          <button id="btn-playlist-save" class="btn-small">저장</button>
-          <button id="btn-playlist-play" class="btn btn-play">재생</button>
-          <button id="btn-playlist-stop" class="btn btn-stop">정지</button>
-        </div>
-        <div id="playlist-status" class="video-replace-status">재생 안 함</div>
+  <div class="page">
+    <header class="top">
+      <h1>소소익선 <small>운영 대시보드</small></h1>
+      <div class="top-tools">
+        <span>서버 시각 <b id="server-time">-</b></span>
+        <button id="btn-show-id" class="btn-ghost" type="button" title="439대 화면에 각자 번호를 띄웁니다">ID 표시</button>
       </div>
-    </div>
+    </header>
 
-    <div id="text-controls" class="control-group pattern-controls" hidden>
-      <label class="pattern-field text-field-wide">
-        텍스트 (줄바꿈 가능)
-        <textarea id="text-content" rows="3">MediaSphere</textarea>
-      </label>
-      <label class="pattern-field">
-        서체
-        <select id="text-font">
-          <option value="sans-serif">sans-serif</option>
-          <option value="sans-serif-black">sans-serif-black</option>
-          <option value="sans-serif-condensed">sans-serif-condensed</option>
-          <option value="sans-serif-light">sans-serif-light</option>
-          <option value="sans-serif-medium">sans-serif-medium</option>
-          <option value="serif">serif</option>
-          <option value="monospace">monospace</option>
-          <option value="casual">casual</option>
-          <option value="cursive">cursive</option>
-        </select>
-      </label>
-      <label class="pattern-field">
-        글자 크기(px)
-        <input type="number" id="text-font-size" min="10" step="10" value="120" />
-      </label>
-      <label class="pattern-field">
-        글자색
-        <input type="color" id="text-color" value="#ffffff" />
-      </label>
-      <label class="pattern-field">
-        배경색
-        <input type="color" id="text-bg-color" value="#000000" />
-      </label>
-      <label class="pattern-field">
-        정렬
-        <select id="text-align">
-          <option value="left">왼쪽</option>
-          <option value="center" selected>가운데</option>
-          <option value="right">오른쪽</option>
-        </select>
-      </label>
-      <label class="pattern-field">
-        방향
-        <select id="text-direction">
-          <option value="left" selected>왼쪽으로</option>
-          <option value="right">오른쪽으로</option>
-          <option value="up">위로</option>
-          <option value="down">아래로</option>
-        </select>
-      </label>
-      <label class="pattern-field">
-        속도(px/초)
-        <input type="number" id="text-speed" min="10" step="10" value="200" />
-      </label>
-      <button id="btn-text-start" class="btn btn-play">텍스트 시작</button>
-      <button id="btn-text-stop" class="btn btn-stop">텍스트 정지</button>
-    </div>
-  </section>
+    <!-- 지금 상태 -->
+    <section class="now" aria-label="지금 상태">
+      <div>
+        <div class="now-label">지금 구체 화면</div>
+        <div class="now-main"><span class="now-dot idle" id="now-dot"></span><span class="now-title" id="now-title">연결 중...</span></div>
+        <div class="now-sub" id="now-sub"></div>
+      </div>
+      <div class="now-side">
+        <div class="online" id="online">- <span>/ 439대 연결</span></div>
+        <div class="sched" id="sched-line"></div>
+      </div>
+    </section>
 
-  <section class="admin-section">
-    <h2>운영 시간 타이머</h2>
-    <div class="schedule-row">
-      <label class="schedule-field"><input type="checkbox" id="schedule-enabled" /> 타이머 사용</label>
-      <label class="schedule-field">시작 <input type="time" id="schedule-start" class="schedule-input" /></label>
-      <label class="schedule-field">종료 <input type="time" id="schedule-end" class="schedule-input" /></label>
-      <span class="schedule-field" id="schedule-closed-days">휴관
-        <label><input type="checkbox" data-day="0" />일</label>
-        <label><input type="checkbox" data-day="1" />월</label>
-        <label><input type="checkbox" data-day="2" />화</label>
-        <label><input type="checkbox" data-day="3" />수</label>
-        <label><input type="checkbox" data-day="4" />목</label>
-        <label><input type="checkbox" data-day="5" />금</label>
-        <label><input type="checkbox" data-day="6" />토</label>
-      </span>
-      <button id="btn-schedule-save" class="btn-small">저장</button>
-    </div>
-    <div id="schedule-status" class="file-status-count schedule-status"></div>
-  </section>
+    <!-- 조작 -->
+    <section class="control" aria-label="화면 조작">
+      <div class="section-label">모드 선택</div>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" type="button" data-mode="video" aria-selected="false"><b>영상</b><span>분할 영상 반복 재생</span></button>
+        <button class="tab" role="tab" type="button" data-mode="pattern" aria-selected="false"><b>패턴</b><span>점멸 · 재생목록</span></button>
+        <button class="tab" role="tab" type="button" data-mode="text" aria-selected="false"><b>텍스트</b><span>흐르는 문구</span></button>
+        <button class="tab" role="tab" type="button" data-mode="idle" aria-selected="false"><b>절전</b><span>검은 화면</span></button>
+      </div>
+      <div class="lock-note" id="mode-locked-note" hidden></div>
 
-  <section class="admin-section">
-    <h2>앱 재시작 / 기기 재부팅</h2>
-    <div class="admin-restart">
-      <input id="restart-device-ids" type="text" placeholder="deviceId 쉼표 구분 (예: 1,2,3) - 비우면 아래 전체 버튼만" />
-      <button id="btn-restart-selected" class="btn-small">선택 재시작</button>
-      <button id="btn-restart-all" class="btn-small btn-danger">전체 재시작</button>
-      <button id="btn-reboot-selected" class="btn-small btn-danger" title="앱 재시작으로 안 풀리는 화면 깨짐(디코더 고장)용 - 폰 자체를 재부팅합니다">선택 재부팅</button>
-    </div>
-  </section>
+      <div data-panel="video" hidden>
+        <div class="pair">
+          <button class="toggle" id="tg-video" type="button">▶ 영상 재생</button>
+          <span class="run-state" id="rs-video"><i></i><span>정지됨</span></span>
+          <span class="note warn" id="video-note" hidden></span>
+        </div>
+      </div>
 
-  <main>
-    <section class="grid-section">
-      <h2>기기 현황</h2>
+      <div data-panel="pattern" hidden>
+        <div class="section-label">무엇을 재생할까요</div>
+        <div class="kinds" id="kinds">
+          <button class="kind" type="button" aria-pressed="true" data-kind="blink"><b>바로 점멸</b><span>지금 정한 색과 간격으로 한 가지 점멸을 실행합니다</span></button>
+          <button class="kind" type="button" aria-pressed="false" data-kind="playlist"><b>재생목록</b><span>저장해 둔 점멸 큐를 순서대로 반복합니다</span></button>
+        </div>
+
+        <div class="pattern-part" id="pt-blink">
+          <div class="section-label">점멸 방식</div>
+          <div class="ways" id="ways">
+            <button class="way" type="button" aria-pressed="true" data-way="all"><b>전체 동시</b><span>모든 폰이 함께 깜빡입니다</span></button>
+            <button class="way" type="button" aria-pressed="false" data-way="sequence"><b>순차</b><span>번호 순서대로 퍼져 나갑니다</span></button>
+          </div>
+          <div class="fields">
+            <label class="field">색상<input type="color" id="pattern-color" value="#ffffff" /></label>
+            <label class="field">색상 모드
+              <select id="pattern-color-mode">
+                <option value="fixed">고정</option>
+                <option value="random">랜덤(컬러)</option>
+                <option value="randomGray">랜덤(흑백)</option>
+                <option value="randomShade">랜덤(지정색)</option>
+              </select>
+            </label>
+            <label class="field" id="pattern-saturation-wrap" hidden>채도(%)<input type="number" id="pattern-color-saturation" min="0" max="100" step="5" value="100" /><span class="hint">낮을수록 파스텔톤</span></label>
+            <label class="field">깜빡임 간격(초)<input type="number" id="pattern-interval" min="0.05" step="0.1" value="0.5" /></label>
+            <label class="field">지속 시간(초)<input type="number" id="pattern-duration" min="0" step="0.5" value="3" /><span class="hint">0이면 정지할 때까지 계속</span></label>
+            <label class="field" id="pattern-step-delay-wrap" hidden>다음 폰까지 간격(초)<input type="number" id="pattern-step-delay" min="0" step="0.05" value="0.2" /></label>
+          </div>
+          <div class="note" id="pattern-shade-note" hidden></div>
+          <div class="pair">
+            <button class="toggle" id="tg-blink" type="button">▶ 점멸 시작</button>
+            <span class="run-state" id="rs-blink"><i></i><span>정지됨</span></span>
+          </div>
+        </div>
+
+        <div class="pattern-part" id="pt-playlist" hidden>
+          <div class="sub-head">
+            <h3>재생목록</h3>
+            <span class="badge warn" id="playlist-unsaved" hidden>저장 안 된 변경 있음</span>
+            <span class="badge go" id="playlist-status" hidden></span>
+          </div>
+          <div class="cue-scroll">
+            <div class="playlist-cue-header">
+              <span class="playlist-col-index">#</span>
+              <span class="playlist-col-color">색상</span>
+              <span class="playlist-col-mode">색상 모드</span>
+              <span class="playlist-col-num" title="랜덤(컬러)일 때만 적용">채도(%)</span>
+              <span class="playlist-col-num">간격(초)</span>
+              <span class="playlist-col-num" title="순차는 폰 한 대가 아니라 이 큐 전체가 지속되는 시간">지속(초)</span>
+              <span class="playlist-col-num" title="순차일 때만 쓰임">다음 폰(초)</span>
+              <span class="playlist-col-mode">방식</span>
+            </div>
+            <div id="playlist-cues" class="playlist-cues"></div>
+          </div>
+          <div class="pair">
+            <button id="btn-playlist-add-cue" class="btn-sm" type="button">+ 큐 추가</button>
+            <button id="btn-playlist-save" class="btn-sm" type="button">저장</button>
+            <button class="toggle" id="tg-playlist" type="button">▶ 재생목록 재생</button>
+          </div>
+        </div>
+      </div>
+
+      <div data-panel="text" hidden>
+        <div class="fields">
+          <label class="field field-wide">문구 (줄바꿈 가능)<textarea id="text-content" rows="2"></textarea></label>
+          <label class="field">글씨체
+            <select id="text-font">
+              <option value="sans-serif">기본</option>
+              <option value="sans-serif-black">굵게</option>
+              <option value="sans-serif-medium">중간 굵기</option>
+              <option value="sans-serif-light">가늘게</option>
+              <option value="sans-serif-condensed">좁게</option>
+              <option value="serif">명조(세리프)</option>
+              <option value="monospace">고정폭</option>
+              <option value="casual">손글씨</option>
+              <option value="cursive">필기체</option>
+            </select>
+          </label>
+          <label class="field">글자 크기<input type="number" id="text-font-size" min="10" step="10" value="120" /></label>
+          <label class="field">글자색<input type="color" id="text-color" value="#ffffff" /></label>
+          <label class="field">배경색<input type="color" id="text-bg-color" value="#000000" /></label>
+          <label class="field">정렬
+            <select id="text-align">
+              <option value="left">왼쪽</option>
+              <option value="center">가운데</option>
+              <option value="right">오른쪽</option>
+            </select>
+          </label>
+          <label class="field">흐르는 방향
+            <select id="text-direction">
+              <option value="left">← 왼쪽으로</option>
+              <option value="right">→ 오른쪽으로</option>
+              <option value="up">↑ 위로</option>
+              <option value="down">↓ 아래로</option>
+            </select>
+          </label>
+          <label class="field">속도(초당 픽셀)<input type="number" id="text-speed" min="10" step="10" value="200" /><span class="hint">클수록 빠름</span></label>
+        </div>
+        <div class="pair">
+          <button class="toggle" id="tg-text" type="button">▶ 텍스트 시작</button>
+          <span class="run-state" id="rs-text"><i></i><span>정지됨</span></span>
+        </div>
+      </div>
+
+      <div data-panel="idle" hidden>
+        <div class="idle-box">구체 화면이 꺼져 있습니다(검은 화면). 다른 모드를 고르면 다시 켜집니다.</div>
+      </div>
+    </section>
+
+    <!-- 기기 현황 -->
+    <section class="devices" aria-label="기기 현황">
+      <div class="dev-head">
+        <h2>기기 현황</h2>
+        <div class="alerts" id="alerts" aria-label="문제 알림"></div>
+      </div>
+      <div class="id-list" id="id-list" hidden>
+        <div class="id-list-head"><b id="id-list-title"></b>
+          <div class="id-list-actions">
+            <button class="btn-sm" type="button" id="btn-copy-ids">번호 복사</button>
+            <button class="btn-sm" type="button" id="btn-fill-ids">재시작·재부팅 칸에 넣기</button>
+          </div>
+        </div>
+        <div class="id-list-nums" id="id-list-nums"></div>
+      </div>
+      <div class="legend">
+        <span><i class="mini"></i>연결됨</span>
+        <span><i class="mini off"></i>연결 끊김</span>
+        <span><i class="mini mis"></i>영상 파일 불일치</span>
+        <span><i class="mini perr"></i>재생 오류</span>
+        <span><i class="mini batt"></i>충전 안 됨</span>
+        <span><i class="mini low"></i>배터리 낮음(충전 중 20% 미만)</span>
+        <span class="alerts-hint">칸에 마우스를 올리면 자세한 상태가 보입니다</span>
+      </div>
       <div id="device-grid" class="device-grid"></div>
     </section>
 
-    <section class="offline-section">
-      <h2>오프라인 기기</h2>
-      <div id="offline-list" class="offline-list">없음</div>
-    </section>
-  </main>
+    <!-- 관리 (기본 접힘) -->
+    <details class="admin" id="admin">
+      <summary>관리 <span class="admin-sum">
+        <span class="pill" id="sum-sched"><i></i>운영 시간</span>
+        <span class="pill" id="sum-replace"><i></i>영상 교체 대기</span>
+        <span class="pill" id="sum-version"><i></i>앱 버전</span>
+        <span class="what">펼치기 ▾</span></span></summary>
+      <div class="admin-body">
+        <section class="acard sched" aria-label="운영 시간">
+          <div class="acard-head">
+            <div><h3>운영 시간</h3><p>정한 시간에만 영상을 재생하고, 끝나면 절전으로 바꿉니다</p></div>
+            <span class="pill" id="st-sched"><i></i>꺼짐</span>
+          </div>
+          <label class="check-line"><input type="checkbox" id="schedule-enabled" /> 타이머 사용</label>
+          <div class="fields">
+            <div class="field">시작
+              <div class="time-pick"><select id="schedule-start-h"></select>:<select id="schedule-start-m"></select></div>
+            </div>
+            <div class="field">종료
+              <div class="time-pick"><select id="schedule-end-h"></select>:<select id="schedule-end-m"></select></div>
+            </div>
+            <div class="field">휴관 요일
+              <div class="seg" id="schedule-closed-days">
+                <button type="button" data-day="0" aria-pressed="false">일</button><button type="button" data-day="1" aria-pressed="false">월</button><button type="button" data-day="2" aria-pressed="false">화</button><button type="button" data-day="3" aria-pressed="false">수</button><button type="button" data-day="4" aria-pressed="false">목</button><button type="button" data-day="5" aria-pressed="false">금</button><button type="button" data-day="6" aria-pressed="false">토</button>
+              </div>
+            </div>
+            <button id="btn-schedule-save" class="btn-sm green" type="button">저장</button>
+          </div>
+          <div class="note" id="schedule-status"></div>
+        </section>
 
-  <section class="admin-section video-replace">
-    <h2>영상 교체</h2>
-    <div class="video-replace-mode">
-      <label><input type="radio" name="vr-mode" value="frontback" checked /> 일반(1:1) 영상 - 전/후면 교체 (2160x2160 기준)</label>
-      <label><input type="radio" name="vr-mode" value="equirect" /> 등장방형 영상으로 교체 (4096x2048 기준)</label>
+        <section class="acard version" aria-label="앱 버전">
+          <div class="acard-head">
+            <div><h3>앱 버전</h3><p>폰에 깔린 앱이 최신인지 확인합니다</p></div>
+            <span class="pill" id="st-version"><i></i>-</span>
+          </div>
+          <div class="ver-stat">
+            <div><span>최신 버전</span><b id="ver-latest">-</b></div>
+            <div><span>최신 버전 폰</span><b id="ver-ok">-</b></div>
+            <div><span>구버전 폰</span><b id="ver-old">-</b></div>
+            <div><span>확인 불가(연결 끊김)</span><b id="ver-unknown">-</b></div>
+          </div>
+          <div class="note" id="ota-status"></div>
+          <button id="btn-version-toggle" class="btn-sm" type="button">그리드에 구버전 폰 표시</button>
+        </section>
+
+        <section class="acard replace wide" aria-label="영상 교체">
+          <div class="acard-head">
+            <div><h3>영상 교체</h3><p>새 영상을 439대 크기로 나눠 폰에 배포합니다 · 수십 분 걸립니다</p></div>
+            <span class="pill" id="st-replace"><i></i>대기 중</span>
+          </div>
+          <div class="note" id="replace-rule">영상 모드에서만 교체할 수 있습니다. 교체하는 동안에는 영상 재생과 모드 변경이 막힙니다.</div>
+          <div class="fields">
+            <label class="field">원본 영상 종류
+              <select id="vr-mode">
+                <option value="frontback">일반 영상 (정사각형 2160×2160)</option>
+                <option value="equirect">360도 파노라마 영상 (4096×2048)</option>
+              </select>
+            </label>
+            <label class="field">파일<input type="file" id="vr-file" accept="video/*" /></label>
+            <button id="btn-vr-start" class="btn-sm green" type="button">교체 시작</button>
+          </div>
+          <div class="replace-progress" id="replace-progress" hidden>
+            <ol class="steps" id="vr-steps"><li data-step="tiles">타일 계산</li><li data-step="encoding">인코딩</li><li data-step="publish">폰 배포</li></ol>
+            <div class="rep-nums" id="vr-nums"></div>
+            <div class="progress"><div id="vr-bar" style="width:0%"></div></div>
+            <div class="note" id="vr-progress-note"></div>
+            <div class="pair"><button id="btn-vr-cancel" class="btn-sm red" type="button">교체 취소</button></div>
+          </div>
+          <div class="note warn" id="vr-error" hidden></div>
+          <div class="file-stat" aria-label="폰 파일 상태">
+            <span class="note">폰에 있는 영상 파일</span>
+            <span class="ok"><b id="fs-ok">-</b> 정상</span>
+            <span class="mis"><b id="fs-mis">-</b> 불일치</span>
+            <span class="na"><b id="fs-na">-</b> 무응답(연결 끊김)</span>
+          </div>
+          <details class="log" id="vr-log-wrap">
+            <summary>자세한 로그 보기 (오류가 나면 자동으로 펼쳐집니다)</summary>
+            <pre id="vr-log"></pre>
+          </details>
+        </section>
+
+        <section class="acard restart wide" aria-label="재시작과 재부팅">
+          <div class="acard-head">
+            <div><h3>재시작 · 재부팅</h3><p>문제 있는 폰을 원격으로 되살립니다 · 번호는 기기 현황 알림에서 바로 넣을 수 있습니다</p></div>
+          </div>
+          <label class="field">폰 번호 (쉼표로 구분)<input type="text" id="restart-device-ids" placeholder="예: 12, 15, 203" /></label>
+          <div class="restart-row">
+            <div>
+              <b>앱 재시작</b>
+              <div class="note">앱만 껐다 켭니다. 화면이 멈췄거나 동작이 이상할 때 먼저 해봅니다.</div>
+              <div class="pair">
+                <button id="btn-restart-selected" class="btn-sm" type="button">선택 앱 재시작</button>
+                <button id="btn-restart-all" class="btn-sm" type="button">전체 앱 재시작</button>
+              </div>
+            </div>
+            <div class="danger">
+              <h3>기기 재부팅</h3>
+              <div class="note">폰 자체를 다시 켭니다(1~2분). 앱 재시작으로 안 풀리는 화면 깨짐(초록 줄무늬·검은 화면)일 때만 씁니다.</div>
+              <div class="pair"><button id="btn-reboot-selected" class="btn-sm red" type="button">선택 재부팅</button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </details>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <div class="modal-back" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h3 id="modal-title"></h3>
+      <p id="modal-body"></p>
+      <div class="actions">
+        <button class="btn-sm" type="button" id="modal-cancel">취소</button>
+        <button class="btn-sm" type="button" id="modal-ok">확인</button>
+      </div>
     </div>
-
-    <div class="video-replace-row">
-      <input type="file" id="vr-file" accept="video/*" />
-      <button id="btn-vr-start" class="btn btn-play">교체 시작</button>
-      <button id="btn-vr-cancel" class="btn-small btn-danger" disabled>취소</button>
-    </div>
-
-    <div id="vr-status" class="video-replace-status">대기 중</div>
-    <pre id="vr-log" class="video-replace-log"></pre>
-  </section>
+  </div>
 
   <script src="app.js"></script>
 </body>

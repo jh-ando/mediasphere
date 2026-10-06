@@ -674,11 +674,12 @@ function finishDeployRun(run) {
   }, DEPLOY_CHECK_UPDATE_DELAY_MS);
 }
 
-// 배포가 진행 중이면(config 발행 시작 ~ 배포 완료 후 CHECK_UPDATE 발송까지) 영상 재생을 막는다 -
-// 그 사이엔 폰마다 옛 영상/새 영상이 섞여 있어 재생하면 구체 전체가 어긋난 화면이 되고, 재생 중
-// 파일 교체도 줄일 수 있다. 대시보드 버튼뿐 아니라 업체 PLAY_TRIGGER도 같은 기준으로 막는다.
+// 영상 교체 중이면(업로드 후 타일 계산·인코딩·발행 ~ 폰 배포 완료 후 CHECK_UPDATE 발송까지) 영상
+// 재생과 모드 변경을 막는다 - 배포 중엔 폰마다 옛 영상/새 영상이 섞여 있어 재생하면 구체 전체가
+// 어긋난 화면이 되고, 재생 중 파일 교체도 줄일 수 있다. 대시보드 버튼뿐 아니라 업체 PLAY_TRIGGER와
+// 운영 시간 타이머의 재생 시작도 같은 기준으로 기다린다. 인코딩 단계는 수십 분 걸린다.
 function isDeployBlockingPlay() {
-  return deployRun !== null;
+  return deployRun !== null || isVideoReplaceRunning();
 }
 
 // manifest의 폰별 config.json을 발행한다. 다운로드가 필요한 폰(온라인이면서 아직 새 파일이
@@ -1025,8 +1026,8 @@ async function scheduleReturnFromOneShotPlay(previousMode) {
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
 app.post('/api/play', (req, res) => {
   if (isDeployBlockingPlay()) {
-    console.log('[HTTP] 재생 요청 거부 - 영상 배포 진행 중');
-    res.status(409).json({ success: false, error: '영상 배포 중에는 재생할 수 없습니다.' });
+    console.log('[HTTP] 재생 요청 거부 - 영상 교체 진행 중');
+    res.status(409).json({ success: false, error: '영상 교체 중에는 재생할 수 없습니다. 교체가 끝난 뒤 재생하세요.' });
     return;
   }
 
@@ -1097,6 +1098,10 @@ const RUNNING_LABELS = {
   textScroll: '텍스트 스크롤', pattern: '점멸', sequence: '순차 점멸',
 };
 
+function rejectWhileReplacing(res) {
+  res.status(409).json({ success: false, error: '영상 교체 중에는 모드를 바꿀 수 없습니다. 교체가 끝난 뒤 바꾸세요.' });
+}
+
 function rejectWhileRunning(res, running) {
   res.status(409).json({
     success: false,
@@ -1127,6 +1132,10 @@ app.post('/api/mode', (req, res) => {
     res.json({ success: true, state });
     return;
   }
+  if (isDeployBlockingPlay()) {
+    rejectWhileReplacing(res);
+    return;
+  }
   const running = getRunningActivity();
   if (running) {
     rejectWhileRunning(res, running);
@@ -1151,6 +1160,10 @@ app.post('/api/mode', (req, res) => {
 app.post('/api/idle', (req, res) => {
   if (state.idleMode) {
     res.json({ success: true, state });
+    return;
+  }
+  if (isDeployBlockingPlay()) {
+    rejectWhileReplacing(res);
     return;
   }
   const running = getRunningActivity();
@@ -1833,6 +1846,28 @@ app.post('/api/distribute/publish', (req, res) => {
 // gen_tiles.py/deploy.py를 자식 프로세스로 그대로 호출한다. 진행상황은 대시보드
 // WebSocket('/')에 VIDEO_REPLACE_PROGRESS로 실시간 방송한다(단계 + 최근 로그).
 let videoReplaceState = { step: 'idle', log: [], error: null };
+// 진행률/남은 시간 계산용 - stepStartedAt은 현재 단계 시작 시각, encodeDone/encodeTotal은
+// slice_video.py가 타일 하나를 끝낼 때마다 찍는 "[254/439] P254.mp4" 줄에서 읽는다.
+let videoReplaceProgress = { stepStartedAt: null, encodeDone: 0, encodeTotal: 0 };
+const ENCODE_PROGRESS_RE = /^\s*\[(\d+)\/(\d+)\]\s/;
+// 남은 시간은 이 개수 이상 끝난 뒤부터 계산한다(처음 몇 개는 속도가 들쭉날쭉).
+const ENCODE_ETA_MIN_DONE = 5;
+
+function isVideoReplaceRunning() {
+  return ['tiles', 'encoding', 'publish'].includes(videoReplaceState.step);
+}
+
+// 대시보드 STATUS_UPDATE(1초 주기)에 실을 요약 - 경과/남은 시간은 서버 시계 기준으로 여기서 계산한다.
+function buildVideoReplaceSummary() {
+  const { step, error } = videoReplaceState;
+  const elapsedMs = videoReplaceProgress.stepStartedAt ? Date.now() - videoReplaceProgress.stepStartedAt : 0;
+  const { encodeDone, encodeTotal } = videoReplaceProgress;
+  let etaMs = null;
+  if (step === 'encoding' && encodeDone >= ENCODE_ETA_MIN_DONE && encodeTotal > encodeDone) {
+    etaMs = Math.round((elapsedMs / encodeDone) * (encodeTotal - encodeDone));
+  }
+  return { step, error, running: isVideoReplaceRunning(), elapsedMs, encodeDone, encodeTotal, etaMs };
+}
 const VIDEO_REPLACE_LOG_MAX_LINES = 300;
 // 지금 실행 중인 자식 프로세스(gen_tiles.py 또는 deploy.py) - 취소 시 이걸 죽인다.
 // deploy.py는 내부에서 slice_video.py/gen_manifest.py/gen_configs.py를 또 자식으로
@@ -1885,12 +1920,20 @@ async function getVideoDurationMs() {
 
 function pushVideoReplaceLog(line) {
   console.log(`[영상교체] ${line}`); // 대시보드를 안 열어도 서버 터미널에서 볼 수 있게
+  if (videoReplaceState.step === 'encoding') {
+    const m = ENCODE_PROGRESS_RE.exec(line);
+    if (m) {
+      videoReplaceProgress.encodeDone = Number(m[1]);
+      videoReplaceProgress.encodeTotal = Number(m[2]);
+    }
+  }
   videoReplaceState.log.push(line);
   if (videoReplaceState.log.length > VIDEO_REPLACE_LOG_MAX_LINES) videoReplaceState.log.shift();
   broadcastVideoReplaceState();
 }
 
 function setVideoReplaceStep(step, error) {
+  if (step !== videoReplaceState.step) videoReplaceProgress.stepStartedAt = Date.now();
   videoReplaceState.step = step;
   videoReplaceState.error = error || null;
   broadcastVideoReplaceState();
@@ -1961,6 +2004,7 @@ function cancelVideoReplace() {
 // 실패해도 서버는 계속 동작 - videoReplaceState.step='error'로 남아 대시보드에 표시된다.
 async function processVideoReplace(mode, uploadedPath) {
   videoReplaceState = { step: 'tiles', log: [], error: null };
+  videoReplaceProgress = { stepStartedAt: Date.now(), encodeDone: 0, encodeTotal: 0 };
   broadcastVideoReplaceState();
 
   try {
@@ -2025,12 +2069,26 @@ app.post('/api/video/replace', videoUpload.single('video'), (req, res) => {
     res.status(400).json({ ok: false, error: '영상 파일(video)이 필요합니다.' });
     return;
   }
-  if (videoReplaceState.step !== 'idle' && videoReplaceState.step !== 'done'
-    && videoReplaceState.step !== 'error'
-  ) {
+  if (isVideoReplaceRunning()) {
     fs.unlink(req.file.path, () => {});
     res.status(409).json({ ok: false, error: '이미 진행 중인 영상 교체 작업이 있습니다.' });
     return;
+  }
+  if (deployRun) {
+    fs.unlink(req.file.path, () => {});
+    res.status(409).json({ ok: false, error: '폰 배포가 아직 진행 중입니다. 배포가 끝난 뒤 교체하세요.' });
+    return;
+  }
+  // 영상 교체는 영상 모드에서만 - 교체하는 동안(수십 분) 화면을 영상 모드로 고정해두고,
+  // 재생은 막는다(isDeployBlockingPlay). 재생 중이었으면 여기서 정지한다.
+  if (state.currentMode !== 'video' || state.idleMode) {
+    fs.unlink(req.file.path, () => {});
+    res.status(409).json({ ok: false, error: '영상 교체는 영상 모드에서만 할 수 있습니다. 영상 모드로 바꾼 뒤 다시 시도하세요.' });
+    return;
+  }
+  if (state.isPlaying) {
+    stopVideoPlayback();
+    console.log('[HTTP] 영상 교체 시작 - 재생 중이던 영상 정지');
   }
 
   console.log(`[HTTP] 영상 교체 시작 - mode=${mode} file=${req.file.originalname} (${req.file.size}B)`);
@@ -2039,9 +2097,7 @@ app.post('/api/video/replace', videoUpload.single('video'), (req, res) => {
 });
 
 app.post('/api/video/replace/cancel', (req, res) => {
-  if (videoReplaceState.step === 'idle' || videoReplaceState.step === 'done'
-    || videoReplaceState.step === 'error'
-  ) {
+  if (!isVideoReplaceRunning()) {
     res.status(409).json({ ok: false, error: '진행 중인 영상 교체 작업이 없습니다.' });
     return;
   }
@@ -2168,8 +2224,8 @@ playbackWss.on('connection', (ws) => {
 
     if (msg.type === 'PLAY_TRIGGER') {
       if (isDeployBlockingPlay()) {
-        console.log('[WS] PLAY_TRIGGER 거부 - 영상 배포 진행 중');
-        ws.send(JSON.stringify({ type: 'ERROR', message: '영상 배포 중이라 재생할 수 없습니다.' }));
+        console.log('[WS] PLAY_TRIGGER 거부 - 영상 교체 진행 중');
+        ws.send(JSON.stringify({ type: 'ERROR', message: '영상 교체 중이라 재생할 수 없습니다.' }));
         return;
       }
 
@@ -2301,7 +2357,7 @@ function scheduleTick() {
   if (scheduleRuntime.pendingStart) {
     if (isDeployBlockingPlay()) {
       if (!scheduleRuntime.waitLogged) {
-        console.log('[HTTP] 운영 시간 타이머 - 영상 배포 중이라 배포가 끝난 뒤 재생 시작');
+        console.log('[HTTP] 운영 시간 타이머 - 영상 교체 중이라 끝난 뒤 재생 시작');
         scheduleRuntime.waitLogged = true;
       }
       return;
@@ -2373,6 +2429,8 @@ function buildStatusPayload() {
     currentMode: state.currentMode,
     idleMode: state.idleMode,
     running: getRunningActivity(),
+    replacing: isDeployBlockingPlay(),
+    videoReplace: buildVideoReplaceSummary(),
     schedule: buildSchedulePayload(),
     patternConfig: state.patternConfig,
     textScrollConfig: state.textScrollConfig,
