@@ -59,12 +59,14 @@
           <option value="fixed">고정</option>
           <option value="random">랜덤(컬러)</option>
           <option value="randomGray">랜덤(흑백)</option>
+          <option value="randomShade">랜덤(지정색)</option>
         </select>
       </label>
       <label class="pattern-field" title="랜덤(컬러)일 때만 적용 - 낮을수록 파스텔톤에 가까워집니다">
         채도(%)
         <input type="number" id="pattern-color-saturation" min="0" max="100" step="5" value="100" />
       </label>
+      <span id="pattern-shade-note" class="pattern-shade-note" hidden></span>
       <label class="pattern-field">
         주기(ms)
         <input type="number" id="pattern-interval" min="50" step="50" value="500" />

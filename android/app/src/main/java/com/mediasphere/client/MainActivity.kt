@@ -79,7 +79,9 @@ private const val DEFAULT_COLOR_OVERLAY_ALPHA = 0.35f
 private const val DEFAULT_TEXT_PATTERN_FADE_MS = 400L // 서버가 fadeInMs/fadeOutMs를 안 보낸 경우 fallback
 private const val COLOR_BLINK_CYCLE_MS = 1000L // 페이드인+페이드아웃 한 사이클 길이
 private const val COLOR_BLINK_REPEAT_COUNT = 9 // repeatCount는 "추가 반복 횟수"라 9를 주면 총 10회 재생된다
-private const val RANDOM_GRAY_MIN_VALUE = 0.3f // 패턴 랜덤(흑백) 최소 명도 - 이보다 어두우면 거의 안 보임
+// 패턴 랜덤(흑백)/랜덤(지정색)의 최소 명도 - 이보다 어두우면 구체에서 거의 안 보인다.
+// 대시보드 안내 문구(server/public/app.js RANDOM_SHADE_MIN_BRIGHTNESS)와 같은 값이어야 한다.
+private const val RANDOM_MIN_VALUE = 0.3f
 private const val SERVER_PORT = 3000
 private const val DOWNLOAD_TIMEOUT_MS = 15000
 private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
@@ -704,7 +706,12 @@ class MainActivity : ComponentActivity() {
     // - "random": 색상(Hue)만 0~360도 무작위, 채도는 colorSaturation(0~100%)로 조절 가능
     //   (낮을수록 파스텔톤), 명도는 최대 고정.
     // - "randomGray": 채도 0 고정(무채색), 명도만 무작위 - 너무 어두우면 안 보이므로
-    //   RANDOM_GRAY_MIN_VALUE 이상에서만 뽑는다.
+    //   RANDOM_MIN_VALUE 이상에서만 뽑는다.
+    // - "randomShade": 지정 색(colorHex)의 색상·채도는 그대로 두고 명도만 RANDOM_MIN_VALUE ~
+    //   지정 색의 명도 사이에서 무작위 - 지정 색이 가장 밝은 톤이 되고 나머지는 같은 색의
+    //   어두운 톤이라, 멀리서는 한 색으로 읽히면서 폰마다 깊이감이 생긴다(2026-10). 지정 색
+    //   자체가 RANDOM_MIN_VALUE보다 어두우면 무작위 없이 그 색을 그대로 쓴다. 이 모드를 모르는
+    //   옛 APK는 else로 빠져 지정 색 고정으로 보인다.
     // 매 호출마다 새로 뽑으므로, 큐 시작 시 한 번뿐 아니라 PatternAnimator가 깜빡일 때마다
     // 다시 불러도 그대로 재사용할 수 있다(패턴 랜덤 컬러가 깜빡일 때마다 바뀌게 하는 기능,
     // 2026-09) - "fixed"는 매번 같은 입력을 그대로 다시 파싱할 뿐이라 재호출해도 안전하다.
@@ -715,16 +722,26 @@ class MainActivity : ComponentActivity() {
                 Color.HSVToColor(floatArrayOf(Random.nextFloat() * 360f, saturation, 1f))
             }
             "randomGray" -> {
-                val value = RANDOM_GRAY_MIN_VALUE + Random.nextFloat() * (1f - RANDOM_GRAY_MIN_VALUE)
+                val value = RANDOM_MIN_VALUE + Random.nextFloat() * (1f - RANDOM_MIN_VALUE)
                 Color.HSVToColor(floatArrayOf(0f, 0f, value))
             }
-            else -> try {
-                Color.parseColor(colorHex)
-            } catch (e: IllegalArgumentException) {
-                Log.e(PATTERN_TAG, "색상 파싱 실패 - $colorHex", e)
-                null
+            "randomShade" -> {
+                val base = parseBlinkColor(colorHex) ?: return null
+                val hsv = FloatArray(3)
+                Color.colorToHSV(base, hsv)
+                if (hsv[2] <= RANDOM_MIN_VALUE) return base
+                hsv[2] = RANDOM_MIN_VALUE + Random.nextFloat() * (hsv[2] - RANDOM_MIN_VALUE)
+                Color.HSVToColor(hsv)
             }
+            else -> parseBlinkColor(colorHex)
         }
+    }
+
+    private fun parseBlinkColor(colorHex: String): Int? = try {
+        Color.parseColor(colorHex)
+    } catch (e: IllegalArgumentException) {
+        Log.e(PATTERN_TAG, "색상 파싱 실패 - $colorHex", e)
+        null
     }
 
     private fun handlePatternStop() {

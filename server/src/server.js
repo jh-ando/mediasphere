@@ -48,8 +48,10 @@ const MODE_MQTT_TYPES = { video: 'MODE_VIDEO', pattern: 'MODE_PATTERN', text: 'M
 const DEFAULT_TEXT_LEAD_TIME_MS = 3000; // 439대가 명령을 다 받을 시간 여유 - OTA와 비슷한 이유로 컬러보다 넉넉히
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 // "fixed" = color 그대로, "random" = 폰마다 무작위 색(채도 조절 가능),
-// "randomGray" = 폰마다 무작위 흑백(명도만 무작위, 채도 0 고정) - 폰 쪽 resolveBlinkColor()와 대응.
-const PATTERN_COLOR_MODES = ['fixed', 'random', 'randomGray'];
+// "randomGray" = 폰마다 무작위 흑백(명도만 무작위, 채도 0 고정),
+// "randomShade" = color의 색상·채도는 그대로, 명도만 폰마다 무작위(30% ~ color의 명도)
+// - 폰 쪽 resolveBlinkColor()와 대응.
+const PATTERN_COLOR_MODES = ['fixed', 'random', 'randomGray', 'randomShade'];
 const DEFAULT_COLOR_DURATION_MS = 3000;
 const DEFAULT_COLOR_LEAD_TIME_MS = 2000;
 const DEFAULT_OTA_LEAD_TIME_MS = 3000; // 다운로드+설치 파이프라인 전체를 트리거하므로 컬러 전환보다 여유를 더 둠
@@ -113,7 +115,8 @@ const state = {
     // "fixed"면 color를 그대로 쓰고, "random"/"randomGray"면 색을 무시하고 각 폰이 자기
     // 화면에서 직접 무작위 색을 뽑는다(서버는 439대가 실제로 뽑은 색을 모른다) - 파라미터만
     // 방송하고 폰이 로컬에서 처리하는 기존 원칙과 동일한 설계. randomGray는 채도 0 고정
-    // (흑백만), colorSaturation은 random(컬러)에서만 쓰이는 채도(%) - 낮을수록 파스텔톤.
+    // (흑백만), randomShade는 color의 톤 안에서 명도만 무작위, colorSaturation은
+    // random(컬러)에서만 쓰이는 채도(%) - 낮을수록 파스텔톤.
     colorMode: 'fixed',
     colorSaturation: 100,
   },

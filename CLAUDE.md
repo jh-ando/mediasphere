@@ -173,6 +173,9 @@ MediaSphere/
                   "interval":500,"duration":3000,
                   "startAt":밀리초}
                  duration=0이면 무한 반복
+                 colorMode: fixed(color 그대로) | random(색상 무작위, colorSaturation 적용)
+                 | randomGray(흑백, 명도 30~100% 무작위) | randomShade(color의 색상·채도 유지,
+                 명도만 30%~color 명도 사이 무작위). 랜덤은 폰마다 깜빡일 때마다 새로 뽑음
 - PATTERN_STOP : {"type":"PATTERN_STOP"}
                  점멸 정지, 마지막 색상 유지
 - COLOR_CHANGE : {"type":"COLOR_CHANGE","color":"#RRGGBB",

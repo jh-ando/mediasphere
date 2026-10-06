@@ -73,9 +73,11 @@ sealed class MqttControlMessage {
     object ModeText : MqttControlMessage()
 
     // 패턴(점멸) 시작 - color는 "#RRGGBB" 형태의 원본 문자열 그대로 전달한다.
-    // colorMode="random"이면 color는 무시되고 폰마다 자기 화면에서 직접 무작위 색을 뽑는다
+    // colorMode가 "random"/"randomGray"면 color는 무시되고, "randomShade"면 color를 기준 색으로
+    // 그 톤 안에서 명도만 바꾼다 - 어느 랜덤이든 폰마다 자기 화면에서 직접 색을 뽑는다
     // (439대가 각자 독립적으로 뽑으므로 서버/대시보드는 실제로 어떤 색 조합이 나왔는지 모른다 -
     // 텍스트 스크롤처럼 "파라미터만 방송, 폰이 로컬 처리" 원칙을 그대로 따른 설계, 2026-09).
+    // 색 계산은 MainActivity.resolveBlinkColor() 참고.
     data class PatternStart(
         val color: String,
         val interval: Long,

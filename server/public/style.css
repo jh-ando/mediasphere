@@ -574,6 +574,21 @@ main {
   font-weight: 600;
 }
 
+.pattern-shade-note {
+  align-self: center;
+  max-width: 260px;
+  color: #8b93a1;
+  font-size: 12px;
+}
+
+.pattern-shade-note.warn {
+  color: #f0b429;
+}
+
+.playlist-cue-row input[type="color"].shade-too-dark {
+  outline: 2px solid #f0b429;
+}
+
 .play-blocked-note {
   align-self: center;
   color: #f0b429;

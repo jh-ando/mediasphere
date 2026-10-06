@@ -43,6 +43,7 @@ const patternControlsEl = document.getElementById('pattern-controls');
 const patternColorEl = document.getElementById('pattern-color');
 const patternColorModeEl = document.getElementById('pattern-color-mode');
 const patternColorSaturationEl = document.getElementById('pattern-color-saturation');
+const patternShadeNoteEl = document.getElementById('pattern-shade-note');
 const patternIntervalEl = document.getElementById('pattern-interval');
 const patternDurationEl = document.getElementById('pattern-duration');
 const patternStepDelayEl = document.getElementById('pattern-step-delay');
@@ -382,11 +383,47 @@ function sendPatternConfig() {
   }).catch((err) => console.error('[HTTP] 패턴 설정 저장 실패', err));
 }
 
-// 색상 모드에 따라 색상 피커/채도 입력을 켜고 끈다 - "고정"이 아니면 색상 피커는 무의미하고,
-// "랜덤(컬러)"가 아니면 채도도 무의미하다(랜덤(흑백)은 채도가 항상 0으로 고정된 개념).
+// 색상 모드에 따라 색상 피커/채도 입력을 켜고 끈다 - 색상 피커는 지정 색을 쓰는 모드("고정",
+// "랜덤(지정색)")에서만 의미가 있고, 채도는 "랜덤(컬러)"에서만 의미가 있다(랜덤(흑백)은 채도가
+// 항상 0, 랜덤(지정색)은 지정 색의 채도를 그대로 쓰는 개념).
 function applyPatternColorModeUi(mode) {
-  patternColorEl.disabled = mode !== 'fixed';
+  patternColorEl.disabled = !colorModeUsesColor(mode);
   patternColorSaturationEl.disabled = mode !== 'random';
+  updatePatternShadeNote();
+}
+
+// 지정 색을 쓰는 색상 모드 - "고정"과 "랜덤(지정색)"(그 색의 톤 안에서 밝기만 무작위).
+function colorModeUsesColor(mode) {
+  return mode === 'fixed' || mode === 'randomShade';
+}
+
+// 랜덤(지정색)의 최소 밝기 - 폰 MainActivity.RANDOM_MIN_VALUE와 같은 값이어야 한다.
+const RANDOM_SHADE_MIN_BRIGHTNESS = 0.3;
+
+// "#RRGGBB"의 밝기(HSV 명도, 0~1) - 폰이 쓰는 Color.colorToHSV의 V와 같은 계산.
+function hexBrightness(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return Math.max((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff) / 255;
+}
+
+// 랜덤(지정색) 안내 - 지정 색이 최소 밝기 이하면 폰이 무작위 없이 그 색 그대로 쓰므로
+// "고장 난 것처럼" 보이지 않게 경고한다. 그 외 모드면 null.
+function shadeNote(mode, hex) {
+  if (mode !== 'randomShade') return null;
+  const brightness = hexBrightness(hex);
+  if (brightness <= RANDOM_SHADE_MIN_BRIGHTNESS) {
+    return { warn: true, text: `지정 색이 너무 어두워(밝기 ${Math.round(brightness * 100)}%) 밝기가 변하지 않습니다 - 30%보다 밝은 색을 고르세요` };
+  }
+  return { warn: false, text: `폰마다 밝기 30%~${Math.round(brightness * 100)}% 사이에서 깜빡일 때마다 달라집니다` };
+}
+
+function updatePatternShadeNote() {
+  const note = shadeNote(patternColorModeEl.value, patternColorEl.value);
+  patternShadeNoteEl.hidden = !note;
+  if (note) {
+    patternShadeNoteEl.textContent = note.text;
+    patternShadeNoteEl.classList.toggle('warn', note.warn);
+  }
 }
 
 function sendTextConfig() {
@@ -512,6 +549,8 @@ btnScheduleSave.addEventListener('click', () => {
 patternColorModeEl.addEventListener('change', () => {
   applyPatternColorModeUi(patternColorModeEl.value);
 });
+
+patternColorEl.addEventListener('input', updatePatternShadeNote);
 
 [textContentEl, textFontEl, textFontSizeEl, textColorEl, textBgColorEl,
   textAlignEl, textDirectionEl, textSpeedEl].forEach((el) => {
@@ -708,20 +747,32 @@ function createCueRow(cue, index) {
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = cue.color;
-  colorInput.disabled = cue.colorMode !== undefined && cue.colorMode !== 'fixed';
-  colorInput.addEventListener('input', () => { playlistCues[index].color = colorInput.value; });
+  colorInput.disabled = !colorModeUsesColor(cue.colorMode || 'fixed');
+  // 랜덤(지정색) 큐는 색상 칸 툴팁으로 밝기 범위를, 너무 어두우면 노란 테두리로 경고를 보여준다.
+  const updateCueShadeHint = () => {
+    const note = shadeNote(colorModeSelect.value, colorInput.value);
+    colorInput.title = note ? note.text : '';
+    colorInput.classList.toggle('shade-too-dark', Boolean(note && note.warn));
+  };
+  colorInput.addEventListener('input', () => {
+    playlistCues[index].color = colorInput.value;
+    updateCueShadeHint();
+  });
 
   const colorModeSelect = document.createElement('select');
   colorModeSelect.innerHTML =
     '<option value="fixed">고정</option>'
     + '<option value="random">랜덤(컬러)</option>'
-    + '<option value="randomGray">랜덤(흑백)</option>';
+    + '<option value="randomGray">랜덤(흑백)</option>'
+    + '<option value="randomShade">랜덤(지정색)</option>';
   colorModeSelect.value = cue.colorMode || 'fixed';
   colorModeSelect.addEventListener('change', () => {
     playlistCues[index].colorMode = colorModeSelect.value;
-    colorInput.disabled = colorModeSelect.value !== 'fixed';
+    colorInput.disabled = !colorModeUsesColor(colorModeSelect.value);
     saturationInput.disabled = colorModeSelect.value !== 'random';
+    updateCueShadeHint();
   });
+  updateCueShadeHint();
 
   const saturationInput = document.createElement('input');
   saturationInput.type = 'number';
