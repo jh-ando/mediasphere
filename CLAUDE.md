@@ -78,6 +78,8 @@ MediaSphere/
 ├── server/        ← Node.js 마스터 서버
 │   ├── src/
 │   └── public/    ← 대시보드 UI, kiosk-test.html
+│                     help.js: 대시보드 도움말(자주 묻는 질문 데이터 + 오른쪽 패널/문맥 말풍선).
+│                     문구는 FAQ 배열만 고치면 됨 - 운영 매뉴얼(00_Admin/..._v2)과 내용을 맞출 것
 ├── android/       ← Android 앱 (Kotlin)
 ├── pipeline/      ← Python 영상 처리
 │   └── slicer/    ← 원본 영상 → 폰별 타일 분할 (gen_tiles.py + slice_video.py)

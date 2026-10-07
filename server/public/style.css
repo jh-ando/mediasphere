@@ -201,6 +201,7 @@ header.top h1 small { font-size: 13px; color: var(--muted); font-weight: 500; ma
 .id-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .id-list-nums { font-family: var(--mono); font-size: 13px; line-height: 1.7; word-break: break-word; font-variant-numeric: tabular-nums; }
 .id-list-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.id-list-title-wrap { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px 0; }
 /* 발열/키오스크 해제/최근 재시작은 번호 대신 표로 - 번호(id-list-nums)는 복사용으로 숨겨 둔다 */
 .id-list.has-table .id-list-nums { display: none; }
 .id-list-table { overflow-x: auto; }
@@ -311,6 +312,43 @@ header.top h1 small { font-size: 13px; color: var(--muted); font-weight: 500; ma
   .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kinds, .ways, .restart-row, .admin-body { grid-template-columns: 1fr; }
 }
+
+/* ── 도움말 · 자주 묻는 질문 (help.js) ───────────────────────── */
+/* 화면 곳곳의 문맥 도움말 - 누르면 질문 하나를 말풍선으로 */
+.help-link { background: none; border: 0; padding: 0; margin-left: 10px; color: var(--info); text-decoration: underline; text-underline-offset: 3px; font-size: 13px; cursor: pointer; }
+.help-link:hover { color: #a9c4ff; }
+.help-row { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-top: -4px; }
+.help-row .help-link:first-child { margin-left: 0; }
+.help-ui { display: inline-block; padding: 0 6px; border-radius: 4px; background: #2a303b; color: #e6e8eb; font-size: 0.92em; }
+.help-pop { position: absolute; z-index: 26; width: min(380px, calc(100vw - 16px)); background: #0f1217; border: 1px solid var(--info); border-radius: 10px; padding: 12px 14px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); font-size: 13px; line-height: 1.65; color: #c7ccd4; }
+.help-pop b { display: block; color: #fff; margin-bottom: 4px; font-size: 13.5px; }
+.help-more { display: block; margin-top: 8px; background: none; border: 0; padding: 0; color: var(--info); font-size: 12px; cursor: pointer; }
+
+/* 오른쪽 패널 - 대시보드를 가리지 않게 화면 오른쪽에 붙는다(좁은 화면에선 전체 폭).
+   층 순서: 도움말 패널 25 · 말풍선 26 < 알림(toast) 30 < 확인창 40 - 패널을 연 채 재부팅 등을 눌러도 확인창이 위에 뜬다 */
+.help { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 25; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -18px 0 40px rgba(0, 0, 0, 0.45); display: flex; flex-direction: column; }
+.help header { padding: 18px 20px 12px; display: grid; gap: 12px; border-bottom: 1px solid var(--line); }
+.help-title { display: flex; align-items: center; gap: 8px; }
+.help-title h2 { margin: 0; font-size: 18px; }
+.help-x { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 20px; cursor: pointer; padding: 2px 6px; }
+.help-x:hover { color: var(--fg); }
+.help-search { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 14px; }
+.help-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.help-cat { padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--fg); font-size: 13px; cursor: pointer; }
+.help-cat b { color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-cat[aria-pressed="true"] { background: color-mix(in srgb, var(--info) 22%, transparent); border-color: var(--info); font-weight: 700; }
+.help-list { overflow: auto; padding: 4px 20px 16px; flex: 1; }
+.help-grp { margin: 14px 0 2px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
+.help-item { border-bottom: 1px solid var(--line); border-radius: 6px; transition: background 0.6s; }
+.help-item.flash { background: color-mix(in srgb, var(--info) 18%, transparent); }
+.help-q { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 12px 4px; background: none; border: 0; color: var(--fg); text-align: left; font-weight: 600; font-size: 14px; line-height: 1.45; cursor: pointer; }
+.help-q::before { content: "Q"; color: var(--info); font-weight: 800; flex: none; width: 14px; }
+.help-q::after { content: "▾"; margin-left: auto; color: var(--muted); flex: none; }
+.help-item.open .help-q::after { content: "▴"; }
+.help-a { display: none; padding: 0 4px 14px 28px; color: #c7ccd4; font-size: 13.5px; line-height: 1.7; }
+.help-item.open .help-a { display: block; }
+.help-empty { color: var(--muted); font-size: 13px; padding: 16px 4px; }
+.help footer { padding: 12px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.6; }
 
 /* ── kiosk-test.html 공용 (이 파일을 같이 쓴다) */
 .header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; background: var(--panel); border-bottom: 1px solid #262b35; }

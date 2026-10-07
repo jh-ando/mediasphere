@@ -17,6 +17,7 @@ const onlineEl = $('online');
 const schedLineEl = $('sched-line');
 const modeTabs = $$('.tabs .tab');
 const modeLockedNoteEl = $('mode-locked-note');
+const modeLockedWrapEl = $('mode-locked-wrap'); // 안내 문구 + "왜 그런가요?"(help.js)
 const panels = $$('[data-panel]');
 
 const tgVideo = $('tg-video');
@@ -64,6 +65,7 @@ const idListNumsEl = $('id-list-nums');
 const idListTableEl = $('id-list-table');
 const idListFootEl = $('id-list-foot');
 const btnAckRestarts = $('btn-ack-restarts');
+const idListHelpEl = $('id-list-help');
 const gridEl = $('device-grid');
 
 const adminEl = $('admin');
@@ -525,7 +527,7 @@ function renderModes(data) {
   });
   panels.forEach((p) => { p.hidden = p.dataset.panel !== mode; });
 
-  modeLockedNoteEl.hidden = !locked;
+  modeLockedWrapEl.hidden = !locked;
   if (vrUpload) {
     modeLockedNoteEl.textContent = '영상을 올리는 중에는 모드를 바꾸거나 재생할 수 없습니다';
   } else if (data.replacing) {
@@ -1021,6 +1023,10 @@ function applyFilter() {
     : `${PROBLEMS.find((x) => x.key === activeFilter).title} ${list.length}대`;
   idListNumsEl.textContent = list.join(', ');
   btnAckRestarts.hidden = activeFilter !== 'restart';
+  // "이게 무슨 뜻인가요?" - 누르면 그 알림을 설명하는 자주 묻는 질문 하나가 말풍선으로 뜬다(help.js)
+  const faqId = window.helpFaqForAlert ? window.helpFaqForAlert(activeFilter) : null;
+  idListHelpEl.hidden = !faqId;
+  if (faqId) idListHelpEl.dataset.faq = faqId;
   renderDetailTable(activeFilter, list);
 }
 

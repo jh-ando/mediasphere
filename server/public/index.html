@@ -12,6 +12,7 @@
       <h1>소소익선 <small>운영 대시보드</small></h1>
       <div class="top-tools">
         <span>서버 시각 <b id="server-time">-</b></span>
+        <button id="btn-help" class="btn-ghost" type="button" title="자주 묻는 질문을 오른쪽에 엽니다">? 도움말</button>
         <button id="btn-show-id" class="btn-ghost" type="button" title="439대 화면에 각자 번호를 띄웁니다">ID 표시</button>
       </div>
     </header>
@@ -38,7 +39,7 @@
         <button class="tab" role="tab" type="button" data-mode="text" aria-selected="false"><b>텍스트</b><span>흐르는 문구</span></button>
         <button class="tab" role="tab" type="button" data-mode="idle" aria-selected="false"><b>절전</b><span>검은 화면</span></button>
       </div>
-      <div class="lock-note" id="mode-locked-note" hidden></div>
+      <div class="lock-note" id="mode-locked-wrap" hidden><span id="mode-locked-note"></span><button class="help-link" type="button" data-faq="locked">왜 그런가요?</button></div>
 
       <div data-panel="video" hidden>
         <div class="pair">
@@ -164,7 +165,7 @@
         <div class="alerts" id="alerts" aria-label="문제 알림"></div>
       </div>
       <div class="id-list" id="id-list" hidden>
-        <div class="id-list-head"><b id="id-list-title"></b>
+        <div class="id-list-head"><span class="id-list-title-wrap"><b id="id-list-title"></b><button class="help-link" type="button" id="id-list-help" hidden>이게 무슨 뜻인가요?</button></span>
           <div class="id-list-actions">
             <button class="btn-sm" type="button" id="btn-copy-ids">번호 복사</button>
             <button class="btn-sm" type="button" id="btn-fill-ids">재시작·재부팅 칸에 넣기</button>
@@ -241,6 +242,7 @@
             <span class="pill" id="st-replace"><i></i>대기 중</span>
           </div>
           <div class="note" id="replace-rule">영상 모드에서만 교체할 수 있습니다. 교체하는 동안에는 영상 재생과 모드 변경이 막힙니다.</div>
+          <div class="help-row"><button class="help-link" type="button" data-faq="replace-disabled">교체 버튼이 안 눌릴 때</button><button class="help-link" type="button" data-faq="replace-time">얼마나 걸리나요?</button><button class="help-link" type="button" data-faq="replace-cancel">취소하면?</button></div>
           <div class="fields">
             <label class="field">원본 영상 종류
               <select id="vr-mode">
@@ -309,6 +311,19 @@
     </div>
   </div>
 
+  <!-- 도움말 · 자주 묻는 질문 (help.js) - 대시보드를 보면서 읽을 수 있게 오른쪽 패널로 연다 -->
+  <aside class="help" id="help" hidden aria-label="도움말">
+    <header>
+      <div class="help-title"><h2>도움말 · 자주 묻는 질문</h2><button class="help-x" type="button" id="help-close" aria-label="닫기">✕</button></div>
+      <input class="help-search" id="help-search" type="search" placeholder="궁금한 내용을 입력하세요 (예: 재부팅, 회색 칸, 발열)" />
+      <div class="help-cats" id="help-cats"></div>
+    </header>
+    <div class="help-list" id="help-list"></div>
+    <footer>자세한 내용은 운영 매뉴얼 v2를 보세요 · 담당자 백주홍 010-4878-5634</footer>
+  </aside>
+  <div class="help-pop" id="help-pop" role="dialog" hidden></div>
+
+  <script src="help.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
