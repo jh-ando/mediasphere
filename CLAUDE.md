@@ -217,7 +217,7 @@ MediaSphere/
 - POST /api/play           (영상 교체·배포 진행 중이면 409 거부 - 업체 PLAY_TRIGGER도 ERROR로 거부)
 - POST /api/stop
 - POST /api/distribute/publish  manifest 재로드 후 폰별 config 배포(동시 다운로드 20대 제한,
-                 시작 시 재생 중인 영상 정지, 완료까지 재생 차단)
+                 시작 시 재생 중인 영상 정지, 완료까지 재생 차단). 영상 교체 진행 중이면 409 거부
 - POST /api/restart-app    {"targetDeviceIds":[...]} (생략 시 전체)
 - POST /api/reboot-device  {"targetDeviceIds":[...]} (필수, 양의 정수 1개 이상)
 - POST /api/mode           {"mode":"video"|"pattern"|"text"}
@@ -227,8 +227,10 @@ MediaSphere/
 - POST /api/idle           절전 모드(패턴 모드 + 검은 화면). 실행 중이거나 영상 교체·배포 중이면 409 거부
 - POST /api/video/replace  원본 영상 업로드 → 타일 계산·인코딩·발행(multipart). 영상 모드에서만 허용
                  (아니면 409), 시작 시 재생 중인 영상 정지. 진행률은 STATUS_UPDATE의 videoReplace
-                 (인코딩 [n/total] 로그로 encodeDone/encodeTotal/etaMs 계산)
-- POST /api/video/replace/cancel 진행 중인 영상 교체 취소
+                 (인코딩 [n/total] 로그로 encodeDone/encodeTotal/etaMs 계산). 인코딩은
+                 distribute/.staging에 하고 전부 성공하면 배포 폴더로 바꿔 넣는다 - 진행 중/실패/
+                 취소 시 배포 폴더와 폰 파일은 그대로(교체 중엔 영상 두 벌만큼 디스크 사용)
+- POST /api/video/replace/cancel 진행 중인 영상 교체 취소 (step='cancelled', 실패 'error'와 구분)
 - GET/POST /api/schedule   운영 시간 타이머 {"enabled","start":"HH:MM","end":"HH:MM","closedDays":[0~6]}
                  (data/schedule.json 저장, 서버 현지 시각 기준). 운영 시간 경계에서만 동작 -
                  시작: 전부 정지 후 영상 재생(배포 중이면 끝난 뒤), 종료: 전부 정지 후 절전.

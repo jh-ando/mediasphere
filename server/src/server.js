@@ -625,6 +625,7 @@ function buildDeployProgress() {
     queued: run.queue.length,
     counts: run.counts,
     finished: run.finished,
+    source: run.source,
   };
 }
 
@@ -682,10 +683,17 @@ function isDeployBlockingPlay() {
   return deployRun !== null || isVideoReplaceRunning();
 }
 
+// 지금 재생/모드 변경을 막고 있는 작업 이름 - 거부 메시지에 쓴다. 영상 교체 없이
+// /api/distribute/publish로 다시 배포만 하는 중이면 "영상 배포", 그 외엔 "영상 교체".
+function blockingWorkLabel() {
+  return deployRun && deployRun.source === 'manual' && !isVideoReplaceRunning() ? '영상 배포' : '영상 교체';
+}
+
 // manifest의 폰별 config.json을 발행한다. 다운로드가 필요한 폰(온라인이면서 아직 새 파일이
 // 확인 안 된 폰)만 동시 DEPLOY_MAX_CONCURRENT대씩 순차로 내보내고, 나머지는 바로 발행한다.
 // 반환값은 대상 폰 수(manifest 전체) - 실제 발행은 백그라운드에서 진행된다.
-function publishDeviceConfigs() {
+// source: 'replace'(영상 교체 마지막 단계) | 'manual'(/api/distribute/publish) - 대시보드 문구용.
+function publishDeviceConfigs(source) {
   if (!manifest) {
     console.error('[MQTT] manifest 없음 - wall/device 발행 생략');
     return 0;
@@ -716,6 +724,7 @@ function publishDeviceConfigs() {
     timers: new Set(),
     pumpScheduled: false,
     finished: false,
+    source,
     total: queue.length,
     counts: { ok: 0, mismatch: 0, failed: 0, timeout: 0, skipped: 0 },
   };
@@ -1026,8 +1035,9 @@ async function scheduleReturnFromOneShotPlay(previousMode) {
 // 재생 시작: isPlaying = true, startAt = 현재 시각. MQTT로 PLAY 명령도 함께 발행한다.
 app.post('/api/play', (req, res) => {
   if (isDeployBlockingPlay()) {
-    console.log('[HTTP] 재생 요청 거부 - 영상 교체 진행 중');
-    res.status(409).json({ success: false, error: '영상 교체 중에는 재생할 수 없습니다. 교체가 끝난 뒤 재생하세요.' });
+    const work = blockingWorkLabel();
+    console.log(`[HTTP] 재생 요청 거부 - ${work} 진행 중`);
+    res.status(409).json({ success: false, error: `${work} 중에는 재생할 수 없습니다. ${work}가 끝난 뒤 재생하세요.` });
     return;
   }
 
@@ -1099,7 +1109,8 @@ const RUNNING_LABELS = {
 };
 
 function rejectWhileReplacing(res) {
-  res.status(409).json({ success: false, error: '영상 교체 중에는 모드를 바꿀 수 없습니다. 교체가 끝난 뒤 바꾸세요.' });
+  const work = blockingWorkLabel();
+  res.status(409).json({ success: false, error: `${work} 중에는 모드를 바꿀 수 없습니다. ${work}가 끝난 뒤 바꾸세요.` });
 }
 
 function rejectWhileRunning(res, running) {
@@ -1825,6 +1836,11 @@ app.get('/api/config/:deviceId', (req, res) => {
 // distribute/manifest.json을 다시 읽고, 폰별 config를 wall/device/{deviceId}(retain)로 재발행한 뒤
 // CHECK_UPDATE를 브로드캐스트해 모든 폰이 자기 config/영상 상태를 다시 검사하도록 한다.
 app.post('/api/distribute/publish', (req, res) => {
+  // 영상 교체가 진행 중이면 거부 - 교체가 끝나면 그 마지막 단계에서 알아서 배포된다.
+  if (isVideoReplaceRunning()) {
+    res.status(409).json({ ok: false, error: '영상 교체가 진행 중입니다. 교체가 끝나면 자동으로 배포됩니다.' });
+    return;
+  }
   loadManifest();
   if (!manifest) {
     res.status(400).json({
@@ -1836,7 +1852,7 @@ app.post('/api/distribute/publish', (req, res) => {
     return;
   }
 
-  const published = publishDeviceConfigs();
+  const published = publishDeviceConfigs('manual');
 
   console.log(`[HTTP] 배포 재발행 - 대상 ${published}대, 동시 다운로드 ${DEPLOY_MAX_CONCURRENT}대 제한으로 순차 발행 시작`);
   res.json({ ok: true, published, totalDevices: manifest.devices.length });
@@ -1875,6 +1891,64 @@ const VIDEO_REPLACE_LOG_MAX_LINES = 300;
 // 그 손자 프로세스(특히 ffmpeg)까지 같이 정리된다.
 let currentChildProcess = null;
 let cancelRequested = false;
+// 취소로 프로세스 트리를 죽이는 작업이 끝났을 때 resolve - Windows에선 deploy.py가 먼저 죽어
+// close가 오고 그 밑 ffmpeg는 조금 늦게 죽는다. 그 전에 정리하면 ffmpeg가 쥔 파일 때문에
+// 임시 폴더/업로드 파일 삭제가 실패해서(로컬 테스트로 확인), 정리 전에 이걸 기다린다.
+let cancelKillDone = null;
+
+// 영상 교체는 인코딩 결과를 바로 배포 폴더(폰이 /clips/로 내려받는 곳)에 쓰지 않고 이 임시
+// 폴더에 만든 뒤, 전부 성공하면 그때 실제 배포 폴더로 바꿔 넣는다. 예전엔 바로 썼더니 교체
+// 도중(수십 분)이나 취소 후에 배포 폴더의 파일이 지금 manifest 체크섬과 어긋나서, 그 사이
+// 새로 받는 폰이 CHECKSUM_MISMATCH가 났다(에뮬레이터 검증으로 확인, 2026-10). 배포 폴더
+// 안에 둬야 같은 디스크라 이름 바꾸기로 한 번에 옮길 수 있고, /clips/는 videos/만 서비스하므로
+// 폰에 노출되지 않는다. 교체하는 동안엔 영상이 두 벌이라 디스크를 그만큼 더 쓴다.
+const VIDEO_REPLACE_STAGING_DIR = path.join(DISTRIBUTE_DIR, '.staging');
+
+// 이름 바꾸기 - Windows는 방금 만든 파일을 바이러스 검사 등이 잠깐 쥐고 있으면 그 폴더 이름
+// 바꾸기가 EPERM/EBUSY로 실패해서(로컬 테스트로 확인, 리눅스 운영 서버엔 없는 제약) 잠깐씩
+// 기다리며 몇 번 다시 해본다.
+async function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.promises.rename(from, to);
+      return;
+    } catch (err) {
+      if (attempt >= 20 || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
+// 임시 폴더에 만든 videos/configs/manifest.json을 실제 배포 폴더로 바꿔 넣는다. 폴더는 이름
+// 바꾸기라 순간적으로 끝난다 - 옛 폴더는 먼저 .old-*로 비켜뒀다가 다 옮긴 뒤 지운다. 옮기다
+// 실패하면 비켜둔 옛 폴더를 되돌려서 배포 폴더가 반쯤 바뀐 채로 남지 않게 한다.
+async function promoteStagedDistribute() {
+  const moved = [];
+  try {
+    for (const name of ['videos', 'configs']) {
+      const live = path.join(DISTRIBUTE_DIR, name);
+      const old = path.join(DISTRIBUTE_DIR, `.old-${name}`);
+      await fs.promises.rm(old, { recursive: true, force: true });
+      if (fs.existsSync(live)) await renameWithRetry(live, old);
+      moved.push(name);
+      await renameWithRetry(path.join(VIDEO_REPLACE_STAGING_DIR, name), live);
+    }
+    await renameWithRetry(path.join(VIDEO_REPLACE_STAGING_DIR, 'manifest.json'), MANIFEST_PATH);
+  } catch (err) {
+    for (const name of moved) {
+      const live = path.join(DISTRIBUTE_DIR, name);
+      const old = path.join(DISTRIBUTE_DIR, `.old-${name}`);
+      if (!fs.existsSync(old)) continue;
+      await fs.promises.rm(live, { recursive: true, force: true });
+      await renameWithRetry(old, live);
+    }
+    throw new Error(`새 영상을 배포 폴더로 옮기지 못했습니다 - 기존 파일은 그대로 둡니다 (${err.message})`);
+  }
+  for (const name of ['videos', 'configs']) {
+    await fs.promises.rm(path.join(DISTRIBUTE_DIR, `.old-${name}`), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  }
+  await removeVideoReplaceStaging();
+}
 
 // ── 영상 길이 확인 (PLAY_TRIGGER 1회 재생용) ──────────────
 // 서버는 평소엔 영상 길이를 전혀 모른다(반복 재생은 폰이 자기 player.duration으로
@@ -1992,7 +2066,11 @@ function cancelVideoReplace() {
     if (process.platform !== 'win32') {
       process.kill(-currentChildProcess.pid, 'SIGTERM');
     } else {
-      spawn('taskkill', ['/pid', String(currentChildProcess.pid), '/t', '/f']);
+      const killer = spawn('taskkill', ['/pid', String(currentChildProcess.pid), '/t', '/f']);
+      cancelKillDone = new Promise((resolve) => {
+        killer.on('close', resolve);
+        killer.on('error', resolve);
+      });
     }
   } catch (err) {
     console.error('[영상교체] 취소 중 오류:', err.message);
@@ -2000,14 +2078,31 @@ function cancelVideoReplace() {
   return true;
 }
 
+// 교체 임시 폴더 정리 - 수백 개 파일이라 비동기로 지우고(서버를 멈추지 않게), 바이러스 검사 등이
+// 파일을 잠깐 쥐고 있을 수 있어 몇 번 재시도한다. 실패하면 다음 교체 시작 때 다시 지운다.
+async function removeVideoReplaceStaging() {
+  try {
+    await fs.promises.rm(VIDEO_REPLACE_STAGING_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  } catch (err) {
+    console.error('[영상교체] 임시 폴더 정리 실패(다음 교체 때 다시 시도):', err.message);
+  }
+}
+
 // 업로드된 영상 하나로 439대 전체를 다시 자르고 배포한다. mode: 'equirect' | 'frontback'.
 // 실패해도 서버는 계속 동작 - videoReplaceState.step='error'로 남아 대시보드에 표시된다.
+// 운영자가 취소하면 step='cancelled'(실패와 구분). 인코딩은 임시 폴더에 하므로 실패/취소해도
+// 배포 폴더와 폰의 파일은 그대로다(VIDEO_REPLACE_STAGING_DIR 주석 참고).
 async function processVideoReplace(mode, uploadedPath) {
   videoReplaceState = { step: 'tiles', log: [], error: null };
   videoReplaceProgress = { stepStartedAt: Date.now(), encodeDone: 0, encodeTotal: 0 };
   broadcastVideoReplaceState();
 
   try {
+    // 지난번에 못 지운 찌꺼기가 새 영상에 섞이지 않게 비우고 시작한다
+    await removeVideoReplaceStaging();
+    if (fs.existsSync(VIDEO_REPLACE_STAGING_DIR)) {
+      throw new Error(`지난 교체의 임시 폴더를 지우지 못했습니다: ${VIDEO_REPLACE_STAGING_DIR}`);
+    }
     const target = VIDEO_REPLACE_TARGET_SIZE[mode];
     const tilesPath = path.join(SLICER_DIR, 'tiles', `video_replace_${mode}.json`);
     const tilesArgs = [
@@ -2024,14 +2119,20 @@ async function processVideoReplace(mode, uploadedPath) {
       '-t', tilesPath,
       '--ap-count', String(VIDEO_REPLACE_AP_COUNT),
       '--base-config', BASE_CONFIG_PATH,
+      '-o', VIDEO_REPLACE_STAGING_DIR,
       '--encoder', 'hevc_nvenc',
       '-j', '10',
     ], SLICER_DIR);
 
     setVideoReplaceStep('publish');
+    if (!fs.existsSync(path.join(VIDEO_REPLACE_STAGING_DIR, 'manifest.json'))) {
+      throw new Error('deploy.py는 끝났는데 manifest.json을 못 찾았습니다.');
+    }
+    await promoteStagedDistribute();
+    pushVideoReplaceLog('새 영상을 배포 폴더로 옮김');
     loadManifest();
-    if (!manifest) throw new Error('deploy.py는 끝났는데 manifest.json을 못 찾았습니다.');
-    const published = publishDeviceConfigs();
+    if (!manifest) throw new Error('배포 폴더의 manifest.json을 읽지 못했습니다.');
+    const published = publishDeviceConfigs('replace');
     pushVideoReplaceLog(
       `발행 시작 - 대상 ${published}대, 동시 다운로드 ${DEPLOY_MAX_CONCURRENT}대씩 순차 배포 중 `
       + '(전체 완료까지 시간이 걸릴 수 있음 - 서버 로그에서 진행 상황 확인)',
@@ -2043,15 +2144,18 @@ async function processVideoReplace(mode, uploadedPath) {
 
     setVideoReplaceStep('done');
   } catch (err) {
+    if (cancelRequested && cancelKillDone) await cancelKillDone;
+    await removeVideoReplaceStaging();
     if (cancelRequested) {
-      pushVideoReplaceLog('사용자 요청으로 취소됨');
-      setVideoReplaceStep('error', '취소됨');
+      pushVideoReplaceLog('사용자 요청으로 취소됨 - 배포 폴더와 폰의 영상은 그대로입니다');
+      setVideoReplaceStep('cancelled');
     } else {
       console.error('[HTTP] 영상 교체 실패:', err.message);
       setVideoReplaceStep('error', err.message);
     }
   } finally {
     cancelRequested = false;
+    cancelKillDone = null;
     fs.unlink(uploadedPath, () => {}); // 업로드 임시 파일 정리 - 실패해도 무시
   }
 }
@@ -2224,8 +2328,9 @@ playbackWss.on('connection', (ws) => {
 
     if (msg.type === 'PLAY_TRIGGER') {
       if (isDeployBlockingPlay()) {
-        console.log('[WS] PLAY_TRIGGER 거부 - 영상 교체 진행 중');
-        ws.send(JSON.stringify({ type: 'ERROR', message: '영상 교체 중이라 재생할 수 없습니다.' }));
+        const work = blockingWorkLabel();
+        console.log(`[WS] PLAY_TRIGGER 거부 - ${work} 진행 중`);
+        ws.send(JSON.stringify({ type: 'ERROR', message: `${work} 중이라 재생할 수 없습니다.` }));
         return;
       }
 
@@ -2357,7 +2462,7 @@ function scheduleTick() {
   if (scheduleRuntime.pendingStart) {
     if (isDeployBlockingPlay()) {
       if (!scheduleRuntime.waitLogged) {
-        console.log('[HTTP] 운영 시간 타이머 - 영상 교체 중이라 끝난 뒤 재생 시작');
+        console.log(`[HTTP] 운영 시간 타이머 - ${blockingWorkLabel()} 중이라 끝난 뒤 재생 시작`);
         scheduleRuntime.waitLogged = true;
       }
       return;

@@ -2,7 +2,6 @@ const RECONNECT_DELAY_MS = 3000;
 const LOW_BATTERY_PCT = 20; // 충전 중인데도 이 아래면 "배터리 낮음" (충전 안 됨은 별도)
 // 랜덤(지정색)의 최소 밝기 - 폰 MainActivity.RANDOM_MIN_VALUE와 같은 값이어야 한다.
 const RANDOM_SHADE_MIN_BRIGHTNESS = 0.3;
-// 인코딩 남은 시간은 서버가 이 개수 이상 끝난 뒤부터 보낸다(server.js ENCODE_ETA_MIN_DONE)
 const TOAST_MS = 2800;
 
 const $ = (id) => document.getElementById(id);
@@ -156,6 +155,9 @@ let activeFilter = null;
 let problemIds = {};
 let lastAlertsSignature = '';
 let vrLastStep = 'idle';
+// 영상 업로드 진행 - 서버는 업로드가 끝나야 교체를 시작하므로(그 전엔 "교체 중"이 아님) 이 페이지가
+// 직접 들고 있다. { xhr, loaded, total } 또는 null. 업로드 중엔 이 페이지의 모드/재생/교체 시작을 막는다.
+let vrUpload = null;
 
 // 셀 DOM은 최초 STATUS_UPDATE 때 한 번만 만들고, 이후엔 상태가 바뀐 셀만 갱신한다.
 let cellRefs = null;
@@ -240,6 +242,13 @@ function setPill(el, cls, text) {
   el.className = `pill ${cls}`.trim();
   el.innerHTML = '<i></i>';
   el.append(text);
+}
+
+// 재생/모드 변경을 막고 있는 작업 이름 - 영상 교체 없이 다시 배포만 하는 중이면 "영상 배포"
+// (서버 blockingWorkLabel과 같은 기준).
+function blockingWork(data) {
+  const manualDeploy = data.deploy && data.deploy.source === 'manual' && !(data.videoReplace || {}).running;
+  return manualDeploy ? '영상 배포' : '영상 교체';
 }
 
 // ── 기기 그리드
@@ -368,10 +377,14 @@ function renderNow(data) {
   let title;
   let sub = '';
 
-  if (data.replacing) {
+  if (vrUpload) {
     dot = 'busy';
-    title = '영상 교체 중';
-    sub = data.deploy ? '새 영상을 폰에 배포하는 중입니다' : '새 영상을 준비하는 중입니다 (관리 > 영상 교체에서 진행 상황 확인)';
+    title = '영상 올리는 중';
+    sub = '업로드가 끝나면 영상 교체가 시작됩니다 (관리 > 영상 교체에서 진행 상황 확인)';
+  } else if (data.replacing) {
+    dot = 'busy';
+    title = `${blockingWork(data)} 중`;
+    sub = data.deploy ? '폰마다 영상 파일을 받는 중입니다' : '새 영상을 준비하는 중입니다 (관리 > 영상 교체에서 진행 상황 확인)';
   } else if (data.idleMode) {
     dot = 'idle';
     title = '절전 (화면 꺼짐)';
@@ -424,7 +437,7 @@ function currentModeKey(data) {
 
 function renderModes(data) {
   const mode = currentModeKey(data);
-  const locked = Boolean(data.running) || Boolean(data.replacing);
+  const locked = Boolean(data.running) || Boolean(data.replacing) || Boolean(vrUpload);
   modeTabs.forEach((t) => {
     t.setAttribute('aria-selected', String(t.dataset.mode === mode));
     t.disabled = locked && t.dataset.mode !== mode;
@@ -432,8 +445,10 @@ function renderModes(data) {
   panels.forEach((p) => { p.hidden = p.dataset.panel !== mode; });
 
   modeLockedNoteEl.hidden = !locked;
-  if (data.replacing) {
-    modeLockedNoteEl.textContent = '영상 교체 중에는 모드를 바꾸거나 재생할 수 없습니다';
+  if (vrUpload) {
+    modeLockedNoteEl.textContent = '영상을 올리는 중에는 모드를 바꾸거나 재생할 수 없습니다';
+  } else if (data.replacing) {
+    modeLockedNoteEl.textContent = `${blockingWork(data)} 중에는 모드를 바꾸거나 재생할 수 없습니다`;
   } else if (data.running) {
     modeLockedNoteEl.textContent = `${RUNNING_LABEL[data.running] || data.running} 중에는 모드를 바꿀 수 없습니다 · 먼저 정지하세요`;
   }
@@ -459,9 +474,10 @@ function setToggle(btn, runStateEl, on, onLabel, offLabel) {
 function renderVideoPanel(data) {
   const playing = data.playState === 'playing';
   setToggle(tgVideo, rsVideo, playing, '■ 영상 정지', '▶ 영상 재생');
-  tgVideo.disabled = Boolean(data.replacing) && !playing;
-  videoNoteEl.hidden = !data.replacing;
-  videoNoteEl.textContent = '영상 교체가 끝나면 재생할 수 있습니다';
+  const busy = Boolean(data.replacing) || Boolean(vrUpload);
+  tgVideo.disabled = busy && !playing;
+  videoNoteEl.hidden = !busy;
+  videoNoteEl.textContent = vrUpload ? '영상 교체가 끝나면 재생할 수 있습니다' : `${blockingWork(data)}가 끝나면 재생할 수 있습니다`;
 }
 
 tgVideo.addEventListener('click', async () => {
@@ -1079,8 +1095,10 @@ function renderReplace(data, fileCounts) {
     li.classList.toggle('done', running && nowIdx > i);
     li.classList.toggle('now', running && nowIdx === i);
   });
-  replaceProgressEl.hidden = !running;
-  btnVrCancel.hidden = !vr.running; // 취소는 서버 쪽 교체 작업(타일·인코딩)에만 - 폰 배포는 취소 대상 아님
+  replaceProgressEl.hidden = !running && !vrUpload;
+  // 취소는 업로드와 서버 쪽 교체 작업(타일·인코딩)에만 - 폰 배포는 취소 대상 아님
+  btnVrCancel.hidden = !vr.running && !vrUpload;
+  btnVrCancel.textContent = vrUpload ? '업로드 취소' : '교체 취소';
 
   vrNumsEl.innerHTML = '';
   let pct = 0;
@@ -1092,7 +1110,12 @@ function renderReplace(data, fileCounts) {
     span.append(`${label} `, b);
     vrNumsEl.appendChild(span);
   };
-  if (deploy) {
+  if (vrUpload) {
+    const mb = (n) => (n / (1024 * 1024)).toFixed(0);
+    addNum('업로드', vrUpload.total > 0 ? `${mb(vrUpload.loaded)} / ${mb(vrUpload.total)} MB` : '시작 중');
+    pct = vrUpload.total > 0 ? (vrUpload.loaded / vrUpload.total) * 100 : 0;
+    note = '업로드가 끝나면 타일 계산과 인코딩이 시작됩니다. 이 창을 닫으면 업로드가 중단됩니다.';
+  } else if (deploy) {
     const c = deploy.counts;
     if (deploy.finished) {
       addNum('폰 배포', '완료 - 재검증 중');
@@ -1121,12 +1144,19 @@ function renderReplace(data, fileCounts) {
   vrProgressNoteEl.textContent = note;
 
   // 상태 표시
-  if (running) {
+  if (vrUpload && !running) {
+    setPill(stReplaceEl, 'busy', '업로드 중');
+    setPill(sumReplaceEl, 'busy', '영상 업로드 중');
+  } else if (running) {
     const label = deploy ? `폰 배포 ${deploy.settled}/${deploy.total}`
       : vr.step === 'encoding' && vr.encodeTotal > 0 ? `인코딩 ${vr.encodeDone}/${vr.encodeTotal}`
         : '준비 중';
-    setPill(stReplaceEl, 'busy', `교체 중 · ${label}`);
-    setPill(sumReplaceEl, 'busy', `영상 교체 중 · ${label}`);
+    const work = blockingWork(data);
+    setPill(stReplaceEl, 'busy', `${work === '영상 배포' ? '배포' : '교체'} 중 · ${label}`);
+    setPill(sumReplaceEl, 'busy', `${work} 중 · ${label}`);
+  } else if (vr.step === 'cancelled') {
+    setPill(stReplaceEl, '', '최근 교체 취소됨');
+    setPill(sumReplaceEl, '', '영상 교체 대기');
   } else if (vr.step === 'error') {
     setPill(stReplaceEl, 'err', '실패');
     setPill(sumReplaceEl, 'err', '영상 교체 실패');
@@ -1146,7 +1176,7 @@ function renderReplace(data, fileCounts) {
 
   // 시작 조건: 영상 모드 + 교체/배포 중 아님
   const inVideoMode = data.currentMode === 'video' && !data.idleMode;
-  btnVrStart.disabled = running || !inVideoMode;
+  btnVrStart.disabled = running || Boolean(vrUpload) || !inVideoMode;
   if (!running && !inVideoMode) {
     replaceRuleEl.className = 'note warn';
     replaceRuleEl.textContent = '지금은 영상 모드가 아닙니다. 영상 모드로 바꾼 뒤 교체할 수 있습니다.';
@@ -1167,6 +1197,35 @@ function applyVideoReplaceProgress(data) {
   if (atBottom) vrLogEl.scrollTop = vrLogEl.scrollHeight;
 }
 
+// 업로드는 fetch 대신 XMLHttpRequest - 업로드 진행률(upload.onprogress)과 취소(abort)가 필요하다.
+function uploadReplaceVideo(formData) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    vrUpload = { xhr, loaded: 0, total: 0 };
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!vrUpload) return;
+      vrUpload.loaded = e.loaded;
+      vrUpload.total = e.lengthComputable ? e.total : 0;
+      // 화면은 다음 STATUS_UPDATE(1초 안)에 갱신된다
+    });
+    const finish = (result) => {
+      vrUpload = null;
+      if (latest) applyStatusUpdate(latest);
+      resolve(result);
+    };
+    xhr.addEventListener('load', () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* 본문 없는 응답 */ }
+      finish({ ok: xhr.status >= 200 && xhr.status < 300 && data.ok, error: data.error });
+    });
+    xhr.addEventListener('error', () => finish({ ok: false, error: '영상을 올리지 못했습니다. 네트워크를 확인하세요.' }));
+    xhr.addEventListener('abort', () => finish({ ok: false, aborted: true }));
+    xhr.open('POST', '/api/video/replace');
+    xhr.send(formData);
+    if (latest) applyStatusUpdate(latest);
+  });
+}
+
 btnVrStart.addEventListener('click', async () => {
   const file = vrFileEl.files[0];
   if (!file) {
@@ -1176,36 +1235,35 @@ btnVrStart.addEventListener('click', async () => {
   const modeLabel = vrModeEl.options[vrModeEl.selectedIndex].textContent;
   const ok = await confirmModal({
     title: '영상을 교체할까요?',
-    body: `"${file.name}"(${modeLabel})을(를) 439대 전체에 배포합니다.\n인코딩에 수십 분이 걸리고, 끝날 때까지 영상 재생과 모드 변경이 막힙니다. 재생 중이면 정지됩니다.`,
+    body: `"${file.name}"(${modeLabel})을(를) 439대 전체에 배포합니다.
+업로드와 인코딩에 수십 분이 걸리고, 끝날 때까지 영상 재생과 모드 변경이 막힙니다. 재생 중이면 정지됩니다.`,
     okLabel: '교체 시작',
   });
-  if (!ok) return;
+  if (!ok || vrUpload) return;
 
   const formData = new FormData();
   formData.append('mode', vrModeEl.value);
   formData.append('video', file);
-  btnVrStart.disabled = true;
-  showToast('영상을 올리는 중입니다...');
-  try {
-    const res = await fetch('/api/video/replace', { method: 'POST', body: formData });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
-      showToast(`교체를 시작하지 못했습니다: ${data.error || '알 수 없는 오류'}`, true);
-      btnVrStart.disabled = false;
-      return;
-    }
-    showToast('영상 교체를 시작했습니다');
-  } catch (err) {
-    console.error('[HTTP] 영상 교체 요청 실패', err);
-    showToast('영상을 올리지 못했습니다. 네트워크를 확인하세요.', true);
-    btnVrStart.disabled = false;
-  }
+  const res = await uploadReplaceVideo(formData);
+  if (res.ok) showToast('영상 교체를 시작했습니다');
+  else if (res.aborted) showToast('업로드를 취소했습니다');
+  else showToast(`교체를 시작하지 못했습니다: ${res.error || '알 수 없는 오류'}`, true);
 });
 
 btnVrCancel.addEventListener('click', async () => {
+  if (vrUpload) {
+    const ok = await confirmModal({
+      title: '업로드를 취소할까요?',
+      body: '올리던 영상은 버려집니다. 지금 배포된 영상은 그대로입니다.',
+      okLabel: '업로드 취소',
+      danger: true,
+    });
+    if (ok && vrUpload) vrUpload.xhr.abort();
+    return;
+  }
   const ok = await confirmModal({
     title: '영상 교체를 취소할까요?',
-    body: '지금까지 인코딩한 내용은 버려집니다. 폰에는 아무것도 바뀌지 않습니다.',
+    body: '지금까지 인코딩한 내용은 버려집니다. 지금 배포된 영상 파일과 폰의 영상은 그대로입니다.',
     okLabel: '교체 취소',
     danger: true,
   });
