@@ -26,8 +26,8 @@ android {
         applicationId = "com.mediasphere.client"
         minSdk = 29
         targetSdk = 36
-        versionCode = 27
-        versionName = "2.61"
+        versionCode = 29
+        versionName = "2.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

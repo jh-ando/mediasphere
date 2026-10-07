@@ -1,0 +1,16 @@
+{
+  "name": "mediasphere-test-tools",
+  "private": true,
+  "description": "MediaSphere 검증 도구 - 로컬 MQTT 브로커(aedes) + 실제 server.js + 가짜 폰/에뮬레이터",
+  "scripts": {
+    "server": "node server-integration.js",
+    "health": "node device-health.js",
+    "sim": "node heartbeat-sim.js",
+    "emulator": "node emulator-e2e.js"
+  },
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "mqtt": "^5.16.0",
+    "ws": "^8.22.0"
+  }
+}

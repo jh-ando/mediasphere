@@ -8,3 +8,9 @@ __pycache__/
 *.pyc
 server/distribute/
 pipeline/slicer/tiles/video_replace_*.json
+
+# 검증 도구 산출물 (tools/test)
+tools/test/clips/
+tools/test/STOP_SIM
+tools/test/*_backup/
+tools/test/*.log
