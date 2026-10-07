@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.BatteryManager
 import android.util.Log
 import com.mediasphere.client.BuildConfig
+import com.mediasphere.client.health.AppHealth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,6 +46,11 @@ private const val OTA_STATUS_TOPIC_PREFIX = "wall/ota/status/"
 private const val OTA_STATUS_QOS = 1
 private const val DEFAULT_SHOW_ID_DURATION_MS = 5000L
 private const val HEARTBEAT_INTERVAL_MS = 5000L
+// heartbeat 몇 번마다 온도를 폰에 저장할지(5초 x 6 = 30초) - 앱이 죽은 뒤 "종료 직전 온도"로 쓴다.
+private const val THERMAL_SNAPSHOT_EVERY = 6
+// 첫 연결 실패 시 다시 시도하는 간격(두 배씩 늘려 최대값까지)
+private const val INITIAL_CONNECT_RETRY_MS = 5_000L
+private const val MAX_CONNECT_RETRY_MS = 30_000L
 private const val PATTERN_CELL_TOPIC_PREFIX = "wall/pattern/"
 private const val PATTERN_CELL_QOS = 1
 
@@ -218,6 +224,19 @@ class MqttManager(
     @Volatile
     var rebootError: String? = null
 
+    // 지난번 앱 종료 정보(AppHealth.resolveLastExit) - 다음 종료 전까지 heartbeat에 계속 싣는다.
+    @Volatile
+    var lastExit: JSONObject? = null
+
+    // 현장 정비 메뉴로 키오스크 잠금을 푼 시각과 앱이 스스로 돌아올 예정 시각 - null이면 잠긴(정상) 상태.
+    @Volatile
+    var kioskUnlockedAt: Long? = null
+
+    @Volatile
+    var kioskReturnAt: Long? = null
+
+    private var heartbeatCount = 0
+
     // heartbeat에서 쓰는 것과 동일한 deviceId를 다른 곳(순차 점멸 등)에서도 재사용할 때 쓴다.
     fun deviceId(): Int = deviceId
 
@@ -278,10 +297,28 @@ class MqttManager(
                 options,
                 null,
                 object : IMqttActionListener {
+                    // Paho 자동 재연결(isAutomaticReconnect)은 한 번이라도 연결에 성공한 뒤에만 동작한다 -
+                    // 첫 연결이 실패하면 그대로 끝나서, 재부팅 직후처럼 Wi-Fi/서버가 아직 준비 안 됐을 때
+                    // 켜진 폰은 앱을 재시작할 때까지 계속 오프라인이었다(에뮬레이터 원격 재부팅 시험에서
+                    // 확인, 2026-10). 첫 연결은 성공할 때까지 직접 다시 시도한다(5초부터 최대 30초 간격).
+                    // disconnect()가 scope를 취소하면 예약된 재시도도 같이 멈춘다.
+                    private var retryDelayMs = INITIAL_CONNECT_RETRY_MS
+
                     override fun onSuccess(asyncActionToken: IMqttToken?) {}
 
                     override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                        Log.e(TAG, "브로커 연결 실패 - $brokerUrl", exception)
+                        Log.e(TAG, "브로커 연결 실패 - $brokerUrl (${retryDelayMs / 1000}초 뒤 다시 시도)", exception)
+                        val delayMs = retryDelayMs
+                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(MAX_CONNECT_RETRY_MS)
+                        val listener = this
+                        scope.launch {
+                            delay(delayMs)
+                            try {
+                                mqttClient.connect(options, null, listener)
+                            } catch (e: Exception) {
+                                listener.onFailure(null, e)
+                            }
+                        }
                     }
                 },
             )
@@ -606,6 +643,20 @@ class MqttManager(
             put("charging", batteryManager.isCharging)
             playerError?.let { put("playerError", it) }
             rebootError?.let { put("rebootError", it) }
+            // 발열 상태(발열 단계 0~6, 배터리/CPU/표면 온도) - 대시보드 "발열" 알림과 툴팁용
+            // (온도 읽기가 실패해도 heartbeat 자체는 나가야 하므로 예외를 삼킨다)
+            runCatching { AppHealth.readThermal(context) }.getOrNull()?.let { thermal ->
+                thermal.putTo(this)
+                if (heartbeatCount++ % THERMAL_SNAPSHOT_EVERY == 0) AppHealth.saveSnapshot(context, thermal)
+            }
+            lastExit?.let { put("lastExit", it) }
+            // 키오스크 잠금 상태 - 현장 정비 메뉴로 풀려 있으면 대시보드에 "키오스크 해제"로 뜬다
+            val unlockedAt = kioskUnlockedAt
+            put("kiosk", unlockedAt == null)
+            if (unlockedAt != null) {
+                put("kioskSince", unlockedAt)
+                kioskReturnAt?.let { put("kioskReturnAt", it) }
+            }
         }.toString()
 
         try {

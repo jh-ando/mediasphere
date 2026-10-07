@@ -30,10 +30,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MediaSphere">
+        <!-- singleTask: 홈 앱으로 고정돼 홈 버튼/시스템 재실행이 와도 화면이 두 개 생기지 않게 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.MediaSphere"
             android:windowSoftInputMode="adjustNothing">
@@ -41,6 +43,14 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 홈 앱 후보로 등록 - Device Owner가 MainActivity.enableKioskLockTask()에서 고정 기본
+                 홈 앱으로 지정한다. 앱이 죽으면 시스템이 홈(=이 앱)을 다시 띄워 스스로 복구된다. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
@@ -50,6 +60,11 @@
         <activity
             android:name=".RestartBridgeActivity"
             android:process=":restart_bridge"
+            android:exported="false" />
+
+        <!-- 생존 확인 알람 - 1분마다 MainActivity가 화면에 없으면 다시 띄운다(KeepAliveReceiver 주석 참고) -->
+        <receiver
+            android:name=".KeepAliveReceiver"
             android:exported="false" />
 
         <!-- OTA로 앱이 갱신된 직후 시스템이 보내는 브로드캐스트 - MainActivity를 재실행한다 -->

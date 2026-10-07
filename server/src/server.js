@@ -14,6 +14,7 @@ const mqtt = require('mqtt');
 const { WebSocketServer, WebSocket } = require('ws');
 const { stressToColor } = require('../lib/stressColor');
 const { computeTextPatternGrid } = require('../lib/textPatternGrid');
+const { createDeviceHealth } = require('../lib/deviceHealth');
 
 // ── 설정값 ──────────────────────────────────────────
 const MULTICAST_ADDR = '239.0.0.1';
@@ -363,6 +364,10 @@ const devicePlayerError = {};
 // deviceId(문자열) -> heartbeat에 실려온 원격 재부팅 실패 사유(NOT_DEVICE_OWNER 등). 재부팅
 // 요청을 보냈는데 폰이 실행하지 못한 경우를 대시보드에서 알 수 있게 한다.
 const deviceRebootError = {};
+// 발열(온도)·키오스크 해제·앱 종료 기록(최근 재시작) - lib/deviceHealth.js 참고.
+// 종료 기록은 서버를 재시작해도 남도록 data/device-events.json에 쌓는다.
+const DEVICE_EVENTS_PATH = path.join(__dirname, '..', 'data', 'device-events.json');
+const deviceHealth = createDeviceHealth(DEVICE_EVENTS_PATH);
 
 function isDeviceOnline(deviceId) {
   const lastSeen = deviceLastSeen[deviceId];
@@ -887,6 +892,7 @@ mqttClient.on('message', (topic, payload) => {
       } else {
         delete deviceRebootError[statusMatch[1]];
       }
+      deviceHealth.onHeartbeat(statusMatch[1], msg, Date.now());
     } catch (err) {
       // 구버전 앱은 versionCode/배터리 필드를 안 보낼 수 있음 - heartbeat 자체는 유효하므로 무시
     }
@@ -1835,6 +1841,23 @@ app.get('/api/config/:deviceId', (req, res) => {
 
 // distribute/manifest.json을 다시 읽고, 폰별 config를 wall/device/{deviceId}(retain)로 재발행한 뒤
 // CHECK_UPDATE를 브로드캐스트해 모든 폰이 자기 config/영상 상태를 다시 검사하도록 한다.
+// 대시보드 "최근 재시작" [확인] - 지금까지 저절로 다시 켜진 기록을 알림에서 뺀다(기록은 남음).
+app.post('/api/restarts/ack', (req, res) => {
+  deviceHealth.ack(Date.now());
+  console.log('[HTTP] 최근 재시작 확인 처리');
+  res.json({ ok: true });
+});
+
+// 한 폰의 앱 종료 기록(원격 재시작·재부팅·OTA 같은 의도한 종료 포함) - 최신순 최대 100건
+app.get('/api/device-events', (req, res) => {
+  const deviceId = Number(req.query.deviceId);
+  if (!Number.isInteger(deviceId) || deviceId <= 0) {
+    res.status(400).json({ ok: false, error: 'deviceId(양의 정수)가 필요합니다.' });
+    return;
+  }
+  res.json({ ok: true, deviceId, events: deviceHealth.eventsFor(deviceId) });
+});
+
 app.post('/api/distribute/publish', (req, res) => {
   // 영상 교체가 진행 중이면 거부 - 교체가 끝나면 그 마지막 단계에서 알아서 배포된다.
   if (isVideoReplaceRunning()) {
@@ -2528,6 +2551,8 @@ function buildStatusPayload() {
     otaStatus,
     versions,
     battery,
+    // thermal, hot, kiosk, restarts, restartAckAt
+    ...deviceHealth.buildPayload((id) => isDeviceOnline(id), Date.now()),
     latestVersionCode: appVersion ? appVersion.versionCode : null,
     deploy: buildDeployProgress(),
     playState: state.isPlaying ? 'playing' : 'stopped',

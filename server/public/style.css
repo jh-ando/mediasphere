@@ -19,6 +19,9 @@
   --batt: #a855f7;
   --low: #fb923c;
   --pattern: #c084fc;
+  --heat: #ff5a36;
+  --kiosk: #ffffff;
+  --restart: #7aa7ff;
   --font: -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
@@ -173,6 +176,11 @@ header.top h1 small { font-size: 13px; color: var(--muted); font-weight: 500; ma
 .chip b { font-variant-numeric: tabular-nums; }
 .chip.k-off { --k: #8b93a1; } .chip.k-mis { --k: var(--warn); } .chip.k-perr { --k: var(--err); }
 .chip.k-batt { --k: var(--batt); } .chip.k-low { --k: var(--low); } .chip.k-rerr { --k: var(--err); }
+.chip.k-heat { --k: var(--heat); } .chip.k-kiosk { --k: var(--kiosk); }
+/* "최근 재시작"은 지금 문제가 아니라 지난 기록이라 구분선 뒤에 점선으로 따로 둔다 */
+.alerts .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.chip.k-restart { --k: var(--restart); border-style: dashed; }
+.chip.k-restart .ico { color: var(--restart); line-height: 1; }
 .chip.ok { --k: var(--go); cursor: default; }
 /* 알림 하나를 누르면: 그 칩은 채워지고 나머지 칩은 흐려진다(그리드 강조와 같은 규칙) */
 .chip[aria-pressed="true"] { background: color-mix(in srgb, var(--k) 22%, transparent); border-color: var(--k); box-shadow: 0 0 0 2px color-mix(in srgb, var(--k) 45%, transparent); font-weight: 700; }
@@ -185,12 +193,28 @@ header.top h1 small { font-size: 13px; color: var(--muted); font-weight: 500; ma
 .mini.perr::before { left: 1px; top: 1px; background: var(--err); }
 .mini.batt::after { right: 1px; bottom: 1px; background: var(--batt); }
 .mini.low::after { right: 1px; bottom: 1px; background: var(--low); }
+.mini.heat { background-image: linear-gradient(225deg, var(--heat) 0 32%, transparent 32%); }
+.mini.kiosk { background-image: linear-gradient(var(--kiosk), var(--kiosk)); background-size: 6px 6px; background-position: 1px calc(100% - 1px); background-repeat: no-repeat; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .id-list { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--k, var(--muted)); border-radius: 8px; background: var(--bg); }
 .id-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .id-list-nums { font-family: var(--mono); font-size: 13px; line-height: 1.7; word-break: break-word; font-variant-numeric: tabular-nums; }
 .id-list-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* 발열/키오스크 해제/최근 재시작은 번호 대신 표로 - 번호(id-list-nums)는 복사용으로 숨겨 둔다 */
+.id-list.has-table .id-list-nums { display: none; }
+.id-list-table { overflow-x: auto; }
+.id-list-table table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.id-list-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.id-list-table td { padding: 6px 12px 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); font-variant-numeric: tabular-nums; vertical-align: top; }
+.id-list-table td.num { font-family: var(--mono); }
+.id-list-table .sub { color: var(--muted); font-size: 12px; }
+.id-list-foot { color: var(--muted); font-size: 12px; }
+.tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.tag.bad { border-color: color-mix(in srgb, var(--err) 70%, transparent); color: #fca5a5; }
+.tag.warn { border-color: color-mix(in srgb, var(--warn) 70%, transparent); color: #fcd34d; }
+.tag.heat { border-color: color-mix(in srgb, var(--heat) 70%, transparent); color: #fdba74; }
+.tag.calm { color: var(--muted); }
 
 .device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16px, 1fr)); gap: 3px; }
 .device-cell { position: relative; aspect-ratio: 1 / 1; max-width: 100%; border-radius: 2px; background: var(--offline); transition: background-color 0.2s ease, opacity 0.15s; }
@@ -202,6 +226,12 @@ header.top h1 small { font-size: 13px; color: var(--muted); font-weight: 500; ma
 .device-cell.battery-not-charging::after, .device-cell.battery-low::after { content: ""; position: absolute; right: 1px; bottom: 1px; width: 35%; height: 35%; border-radius: 50%; }
 .device-cell.battery-not-charging::after { background: var(--batt); }
 .device-cell.battery-low::after { background: var(--low); }
+/* 발열(오른쪽 위 삼각형)·키오스크 해제(왼쪽 아래 흰 네모) - ::before/::after는 이미 재생 오류·배터리가
+   쓰고 있어서 배경 그림 두 겹으로 그린다(연결 색은 background-color라 그대로 보인다).
+   .device-cell.online의 background 단축 속성이 그림을 지우지 않도록 같은 우선순위로 뒤에 둔다. */
+.device-grid .device-cell { background-repeat: no-repeat; background-image: var(--g-heat, none), var(--g-kiosk, none); background-size: 100% 100%, 35% 35%; background-position: 0 0, 1px calc(100% - 1px); }
+.device-cell.hot { --g-heat: linear-gradient(225deg, var(--heat) 0 30%, transparent 30%); }
+.device-cell.kiosk-off { --g-kiosk: linear-gradient(var(--kiosk), var(--kiosk)); }
 .device-cell.dim { opacity: 0.15; }
 
 /* ── 관리 (기본 접힘) */

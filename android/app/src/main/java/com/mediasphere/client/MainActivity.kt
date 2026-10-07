@@ -3,6 +3,7 @@ package com.mediasphere.client
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.AlertDialog
 import android.app.admin.DevicePolicyManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
@@ -15,6 +16,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -33,6 +36,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.mediasphere.client.health.AppHealth
 import com.mediasphere.client.mqtt.MqttControlMessage
 import com.mediasphere.client.mqtt.MqttManager
 import com.mediasphere.client.network.TimecodeReceiver
@@ -103,6 +107,20 @@ private const val AUTO_ID_DISPLAY_MS = 5000L // 앱 실행 직후 자동으로 I
 // 풀린다 - 탭 사이 간격이 KIOSK_EXIT_TAP_WINDOW_MS를 넘으면 그동안 센 횟수는 리셋된다.
 private const val KIOSK_EXIT_TAP_COUNT = 5
 private const val KIOSK_EXIT_TAP_WINDOW_MS = 1500L
+// 정비 메뉴로 키오스크를 푼 뒤 이 시간 안에 앱으로 안 돌아오면 앱이 스스로 앞으로 나온다 -
+// 작업자가 설정 화면을 열어둔 채 자리를 떠도 구체에 그 폰만 설정 화면으로 남지 않게.
+private const val KIOSK_MAINTENANCE_RETURN_MS = 10 * 60_000L
+
+// 현장 정비(키오스크 해제) 상태. 자동 복귀 예약은 Activity가 다시 만들어져도 남아야 하므로
+// Activity 인스턴스가 아니라 프로세스 단위로 둔다.
+private object KioskMaintenance {
+    val handler = Handler(Looper.getMainLooper())
+    var unlockedAt: Long? = null
+    var returnTask: Runnable? = null
+}
+
+// 생존 확인 알람(KeepAliveReceiver)이 정비 중엔 앱을 끌어오지 않도록 확인할 때 쓴다.
+internal fun isKioskMaintenanceActive(): Boolean = KioskMaintenance.unlockedAt != null
 
 // 영상 모드 / 패턴 모드는 상호 배타적으로 동작한다.
 enum class Mode { VIDEO, PATTERN, TEXT_SCROLL }
@@ -120,6 +138,14 @@ private sealed class DownloadResult {
 }
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        // 이 화면이 지금 보이는지(onStart~onStop) - 생존 확인 알람(KeepAliveReceiver)이 본다.
+        // 프로세스가 죽었다 새로 뜨면 false부터 시작한다.
+        @Volatile
+        var inForeground = false
+            private set
+    }
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
@@ -164,6 +190,9 @@ class MainActivity : ComponentActivity() {
     // 안 걸린 상태에서 부르면 예외를 던지므로, 해제 제스처(kioskExitZone)에서 이 값으로
     // 먼저 확인한다.
     private var kioskLocked = false
+
+    // onCreate에서 홈 방식으로 다시 실행하려고 바로 끝낸 경우 - 초기화를 안 했으므로 onDestroy 정리를 건너뛴다.
+    private var relaunchedAsHome = false
 
     // wall/device/{deviceId}로 마지막으로 받은 config - CHECK_UPDATE 재검증 시 재사용한다
     private var lastDeviceConfig: MqttControlMessage.DeviceConfig? = null
@@ -222,6 +251,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 일반 방식(부팅 리시버, 아이콘, 재시작 중계 등)으로 떴으면 홈 방식으로 다시 실행한다 -
+        // 아래 relaunchAsHomeIfNeeded() 주석 참고. 다시 실행하면 이 인스턴스는 초기화 없이 끝낸다.
+        if (relaunchAsHomeIfNeeded()) return
+
         // 설치 환경에서 화면이 꺼지지 않도록 유지
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
@@ -265,9 +298,8 @@ class MainActivity : ComponentActivity() {
         // Scoped Storage 우회 권한(MANAGE_EXTERNAL_STORAGE) 확인 - 없으면 설정 화면으로 이동
         checkManageExternalStoragePermission()
 
-        // 키오스크 잠금 모드 - 켜지면 앱이 크래시로 죽어도 시스템이 자동으로 다시 띄워준다.
-        // 무선디버깅이 꺼져 있고 현장에 갈 수도 없을 때 원격으로 앱을 되살릴 방법이 없던
-        // 문제의 해결책(2026-09).
+        // 키오스크 잠금 + 기본 홈 앱 고정 - 앱이 죽으면 시스템이 홈(=이 앱)을 다시 띄운다.
+        // (잠금만으로는 다시 안 뜬다 - enableKioskLockTask() 주석 참고)
         enableKioskLockTask()
 
         setContentView(R.layout.activity_main)
@@ -360,9 +392,33 @@ class MainActivity : ComponentActivity() {
         updateManager = UpdateManager(this, mqttManager)
         mqttManager.connect()
 
+        // 앱이 죽었는데 시스템이 다시 안 띄우는 경우(뒤에 다른 화면이 남아 있을 때 등)를 위한 안전망
+        KeepAliveReceiver.schedule(applicationContext)
+
+        // 지난번에 앱이 왜 끝났는지 판정해서 heartbeat로 보고한다(대시보드 "최근 재시작").
+        lifecycleScope.launch(Dispatchers.IO) {
+            mqttManager.lastExit = AppHealth.resolveLastExit(applicationContext)
+        }
+
         // 앱을 켜자마자 몇 초간 deviceId를 보여준다 - MQTT/Wi-Fi 연결 전에도 동작해서
         // config.json을 방금 심은 폰을 물리적으로 바로 식별할 수 있다.
         showIdOverlay(AUTO_ID_DISPLAY_MS)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        inForeground = true
+    }
+
+    override fun onStop() {
+        inForeground = false
+        super.onStop()
+    }
+
+    // 정비 메뉴로 설정 화면에 갔다가 돌아오면(홈 버튼, 뒤로 가기, 자동 복귀 모두) 다시 잠근다.
+    override fun onResume() {
+        super.onResume()
+        endKioskMaintenance()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -394,6 +450,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (relaunchedAsHome) {
+            super.onDestroy()
+            // 이 화면이 완전히 끝난 뒤에 홈 방식으로 띄운다 - 끝나기 전에 띄우면 singleTask라
+            // 끝나는 중인 이 화면을 재사용해서, 초기화 안 된 빈 화면이 남는다(에뮬레이터에서 확인).
+            applicationContext.startActivity(AppLaunch.homeIntent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return
+        }
         timecodeReceiver.stop()
         mqttManager.disconnect()
         PatternAnimator.stop()
@@ -1011,6 +1074,7 @@ class MainActivity : ComponentActivity() {
     // exit(0)는 onDestroy()를 거치지 않아 디코더가 반납되지 않은 채 프로세스가 죽는다 - 시스템
     // 코덱 서비스가 뒤처리를 떠안다가 꼬일 여지를 줄이려고 먼저 player.release()로 정상 반납한다.
     private fun restartProcess() {
+        AppHealth.markIntentionalExit(this, "RESTART")
         player.release()
         startActivity(
             Intent(this, RestartBridgeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -1037,10 +1101,12 @@ class MainActivity : ComponentActivity() {
         }
         Log.d(TAG, "REBOOT_DEVICE 수신 - 기기 재부팅")
         try {
+            AppHealth.markIntentionalExit(this, "REBOOT")
             dpm.reboot(ComponentName(this, DeviceAdminReceiver::class.java))
         } catch (e: Exception) {
             // 통화 중 등 시스템이 재부팅을 거부하는 경우 - 앱은 그대로 계속 동작한다.
             Log.e(TAG, "기기 재부팅 실패", e)
+            AppHealth.clearIntentionalExit(this)
             mqttManager.rebootError = "REBOOT_FAILED: ${e.javaClass.simpleName}"
         }
     }
@@ -1371,9 +1437,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // Device Owner 상태에서만 동작한다(OTA 무인 설치와 같은 전제 - DeviceAdminReceiver 참고).
-    // setLockTaskPackages()로 이 앱을 허용 목록에 올린 뒤 startLockTask()로 잠그면, 시스템이
-    // "이 앱은 항상 떠 있어야 한다"고 보고 크래시로 죽었을 때 자동으로 다시 실행해준다 -
-    // 원격 ADB도 없고 현장에 사람이 갈 수도 없는 상황에서 유일한 자동 복구 수단이다.
+    // setLockTaskPackages()로 이 앱을 허용 목록에 올린 뒤 startLockTask()로 잠그고, 이 앱을
+    // 고정 기본 홈 앱으로 등록한다. 예전엔 "잠가두면 앱이 죽어도 시스템이 다시 띄워준다"고
+    // 봤는데 사실이 아니었다 - 에뮬레이터에서 프로세스를 죽이면 잠금이 풀리고 기본 홈 화면에
+    // 멈췄다(현장에서 발열로 앱이 죽으면 사람이 직접 폰을 만져야 했던 원인, 2026-10). 홈 앱으로
+    // 고정해 두면 앱이 죽었을 때 시스템이 홈(=이 앱)을 다시 띄우므로 스스로 복구된다.
+    // 호출할 때마다 다시 등록해도 같은 값이라 문제없다(OTA로 처음 이 버전이 깔릴 때도 등록됨).
     // Device Owner가 아닌 개발/테스트 기기에서는 조용히 건너뛴다.
     private fun enableKioskLockTask() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -1384,9 +1453,10 @@ class MainActivity : ComponentActivity() {
 
         val admin = ComponentName(this, DeviceAdminReceiver::class.java)
         dpm.setLockTaskPackages(admin, arrayOf(packageName))
+        pinAsHomeApp(dpm)
         startLockTask()
         kioskLocked = true
-        Log.d(TAG, "Lock Task Mode 시작 - 크래시 시 시스템이 자동 재실행")
+        Log.d(TAG, "Lock Task Mode 시작 + 기본 홈 앱 고정 - 앱이 죽으면 시스템이 다시 띄움")
     }
 
     // 화면 왼쪽 위 구석(kioskExitZone, 투명해서 안 보임)을 KIOSK_EXIT_TAP_COUNT번 연속으로
@@ -1413,14 +1483,107 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun pinAsHomeApp(dpm: DevicePolicyManager) {
+        val homeFilter = IntentFilter(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            addCategory(Intent.CATEGORY_DEFAULT)
+        }
+        dpm.addPersistentPreferredActivity(
+            ComponentName(this, DeviceAdminReceiver::class.java),
+            homeFilter,
+            ComponentName(this, MainActivity::class.java),
+        )
+    }
+
+    // 앱이 죽었을 때 시스템이 다시 띄우는 건 "홈으로 실행된 화면"이다. 기본 홈 앱으로 고정해도
+    // 지금 이 화면이 일반 방식으로 떠 있으면 앱이 죽었을 때 다시 안 뜬다(에뮬레이터에서 확인,
+    // 2026-10). 앱 안에서 띄우는 곳(부팅/원격 재시작/OTA 직후/정비 자동 복귀)은 AppLaunch로
+    // 처음부터 홈 방식으로 띄우고, 그 밖(아이콘, adb 등)으로 떴을 때만 여기서 고정을 마친 뒤
+    // 이 인스턴스를 끝내고 onDestroy에서 홈 방식으로 다시 띄운다. 홈이 실제로 이 앱으로 잡힐
+    // 때만 한다 - 아니면(Device Owner가 아닌 개발 폰, 고정 실패) 다른 런처로 빠져버리므로
+    // 그냥 이대로 실행한다.
+    //
+    // 주의: 처음 고정한 직후엔 원래 런처가 이미 홈으로 떠 있어서, 다음 재부팅 전까지는 앱이
+    // 죽으면 그 런처로 돌아간다. 고정을 처음 적용하는 배포(OTA) 뒤에는 원격 재부팅을 한 번 한다.
+    private fun relaunchAsHomeIfNeeded(): Boolean {
+        if (intent?.hasCategory(Intent.CATEGORY_HOME) == true) return false
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(packageName)) return false
+        try {
+            pinAsHomeApp(dpm)
+        } catch (e: Exception) {
+            Log.e(TAG, "기본 홈 앱 고정 실패 - 일반 방식으로 계속 실행", e)
+            return false
+        }
+        if (!AppLaunch.isPinnedHome(this)) return false
+        Log.d(TAG, "일반 방식으로 실행됨 - 홈 방식으로 다시 실행")
+        relaunchedAsHome = true
+        finish()
+        return true
+    }
+
     private fun exitKioskLockTask() {
         if (!kioskLocked) return
         try {
             stopLockTask()
             kioskLocked = false
-            Log.d(TAG, "잠금 해제 제스처 감지 - Lock Task Mode 해제")
+            Log.d(TAG, "잠금 해제 제스처 감지 - Lock Task Mode 해제, 정비 메뉴 표시")
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "Lock Task Mode 해제 실패", e)
+            return
         }
+        startKioskMaintenance()
+        showMaintenanceMenu()
+    }
+
+    // 현장 정비 메뉴. 홈 앱 고정은 풀지 않는다 - 그래서 설정 화면에서 홈 버튼을 누르면 곧바로
+    // 이 앱으로 돌아오고(onResume에서 다시 잠김), 정비 중에 앱이 죽어도 시스템이 다시 띄운다.
+    private fun showMaintenanceMenu() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("현장 정비")
+            .setMessage(
+                "키오스크 잠금을 풀었습니다. 설정 화면에서 홈 버튼을 누르면 앱으로 돌아오고, " +
+                    "${KIOSK_MAINTENANCE_RETURN_MS / 60_000}분 동안 돌아오지 않으면 자동으로 돌아옵니다.",
+            )
+            .setPositiveButton("설정 열기") { _, _ ->
+                startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            .setNegativeButton("앱으로 돌아가기") { _, _ -> endKioskMaintenance() }
+            .setOnCancelListener { endKioskMaintenance() }
+            .show()
+    }
+
+    // 정비 시작 - heartbeat로 대시보드에 "키오스크 해제"를 알리고 자동 복귀를 예약한다.
+    // 앱이 백그라운드에서 화면을 띄우는 건 원래 막혀 있지만 Device Owner 앱은 예외다.
+    private fun startKioskMaintenance() {
+        val now = System.currentTimeMillis()
+        KioskMaintenance.unlockedAt = now
+        mqttManager.kioskUnlockedAt = now
+        mqttManager.kioskReturnAt = now + KIOSK_MAINTENANCE_RETURN_MS
+        val appContext = applicationContext
+        val task = Runnable {
+            Log.d(TAG, "정비 시간 초과 - 앱으로 자동 복귀")
+            appContext.startActivity(
+                AppLaunch.mainIntent(appContext)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+            )
+        }
+        KioskMaintenance.returnTask?.let { KioskMaintenance.handler.removeCallbacks(it) }
+        KioskMaintenance.returnTask = task
+        KioskMaintenance.handler.postDelayed(task, KIOSK_MAINTENANCE_RETURN_MS)
+    }
+
+    // 정비 끝 - 자동 복귀 예약을 지우고 다시 잠근다. 정비 중이 아니면 아무것도 안 한다.
+    private fun endKioskMaintenance() {
+        if (KioskMaintenance.unlockedAt == null) return
+        KioskMaintenance.returnTask?.let { KioskMaintenance.handler.removeCallbacks(it) }
+        KioskMaintenance.returnTask = null
+        KioskMaintenance.unlockedAt = null
+        if (::mqttManager.isInitialized) {
+            mqttManager.kioskUnlockedAt = null
+            mqttManager.kioskReturnAt = null
+        }
+        if (!kioskLocked) enableKioskLockTask()
+        Log.d(TAG, "정비 종료 - 키오스크 다시 잠금")
     }
 }

@@ -10,6 +10,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.mediasphere.client.BuildConfig
+import com.mediasphere.client.health.AppHealth
 import com.mediasphere.client.mqtt.MqttControlMessage
 import com.mediasphere.client.mqtt.MqttManager
 import com.mediasphere.client.sync.TimeSyncManager
@@ -246,6 +247,8 @@ class UpdateManager(
                     context, sessionId, intent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
                 )
+                // 설치가 끝나면 시스템이 이 프로세스를 바로 끝낸다 - 다음 실행 때 "최근 재시작"으로 안 잡히게 표시
+                AppHealth.markIntentionalExit(context, "UPDATE")
                 session.commit(pendingIntent.intentSender)
             }
         } catch (e: Exception) {

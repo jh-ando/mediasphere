@@ -3,6 +3,7 @@ package com.mediasphere.client.update
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.mediasphere.client.AppLaunch
 import android.util.Log
 import com.mediasphere.client.MainActivity
 
@@ -23,7 +24,7 @@ class UpdateReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
 
         Log.d(TAG, "MY_PACKAGE_REPLACED 수신 - MainActivity 재시작")
-        val launchIntent = Intent(context, MainActivity::class.java).apply {
+        val launchIntent = AppLaunch.mainIntent(context).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         context.startActivity(launchIntent)

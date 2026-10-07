@@ -61,6 +61,9 @@ const alertsEl = $('alerts');
 const idListEl = $('id-list');
 const idListTitleEl = $('id-list-title');
 const idListNumsEl = $('id-list-nums');
+const idListTableEl = $('id-list-table');
+const idListFootEl = $('id-list-foot');
+const btnAckRestarts = $('btn-ack-restarts');
 const gridEl = $('device-grid');
 
 const adminEl = $('admin');
@@ -122,6 +125,30 @@ const FILE_REASON_LABEL = {
   RENAME_FAILED: '파일 교체 실패',
 };
 const REBOOT_ERROR_LABEL = { NOT_DEVICE_OWNER: 'Device Owner 아님(재등록 필요)' };
+// 발열 단계(안드로이드 PowerManager 0~6) - 시스템은 이 단계로 성능을 낮추거나 앱을 정리한다.
+const THERMAL_LABEL = ['정상', '약간', '보통', '심각', '위험', '비상', '종료 직전'];
+// 앱 종료 사유(폰 ApplicationExitInfo) - cls는 표의 색(bad 빨강, warn 노랑, calm 회색)
+const EXIT_REASON = {
+  CRASH: ['앱 오류(크래시)', 'bad'],
+  CRASH_NATIVE: ['앱 오류(네이티브)', 'bad'],
+  ANR: ['응답 없음(ANR)', 'bad'],
+  SIGNALED: ['시스템이 종료', 'bad'],
+  EXCESSIVE_RESOURCE_USAGE: ['자원 과다 사용', 'bad'],
+  LOW_MEMORY: ['메모리 부족', 'warn'],
+  FREEZER: ['시스템 동결', 'warn'],
+  DEVICE_REBOOT: ['기기 재부팅 후 시작', 'calm'],
+  EXIT_SELF: ['앱 스스로 종료', 'calm'],
+  USER_REQUESTED: ['사용자 요청 종료', 'calm'],
+  USER_STOPPED: ['사용자 중지', 'calm'],
+  DEPENDENCY_DIED: ['연관 프로세스 종료', 'calm'],
+  INITIALIZATION_FAILURE: ['초기화 실패', 'bad'],
+  PERMISSION_CHANGE: ['권한 변경', 'calm'],
+  PACKAGE_UPDATED: ['앱 업데이트', 'calm'],
+  OTHER: ['기타', 'calm'],
+  UNKNOWN: ['원인 불명', 'calm'],
+};
+const exitReasonLabel = (r) => (EXIT_REASON[r] || [r, 'calm'])[0];
+const exitReasonClass = (r) => (EXIT_REASON[r] || [r, 'calm'])[1];
 
 // 문제 알림 종류 - 순서대로 칩을 그린다. icon은 그리드 칸과 같은 모양의 작은 칸.
 const PROBLEMS = [
@@ -129,6 +156,8 @@ const PROBLEMS = [
   { key: 'mis', label: '영상 파일 불일치', icon: 'mini mis', title: '영상 파일이 다른 폰' },
   { key: 'perr', label: '재생 오류', icon: 'mini perr', title: '재생 오류 폰' },
   { key: 'rerr', label: '재부팅 실패', icon: 'mini perr', title: '재부팅 요청이 실패한 폰' },
+  { key: 'heat', label: '발열', icon: 'mini heat', title: '발열 폰' },
+  { key: 'kiosk', label: '키오스크 해제', icon: 'mini kiosk', title: '키오스크 해제 폰(현장 정비 중)' },
   { key: 'batt', label: '충전 안 됨', icon: 'mini batt', title: '충전 안 되는 폰' },
   { key: 'low', label: '배터리 낮음', icon: 'mini low', title: '배터리 낮은 폰' },
 ];
@@ -153,6 +182,9 @@ let playlistDirty = false;
 // 문제 알림 필터(누른 칩) - 그리드에서 그 폰만 남기고 번호 목록을 보여준다.
 let activeFilter = null;
 let problemIds = {};
+// "최근 재시작"(문제 알림과 따로 두는 지난 기록)과 발열/정비 표에 쓰는 최신 상태
+let restartIds = [];
+let healthState = { thermal: {}, kiosk: {}, restarts: {} };
 let lastAlertsSignature = '';
 let vrLastStep = 'idle';
 // 영상 업로드 진행 - 서버는 업로드가 끝나야 교체를 시작하므로(그 전엔 "교체 중"이 아님) 이 페이지가
@@ -238,6 +270,28 @@ function formatDuration(ms) {
   if (min < 60) return `${min}분`;
   return `${Math.floor(min / 60)}시간 ${min % 60}분`;
 }
+// 온도 한 줄 - 폰이 안 준 값(CPU·표면 온도를 안 주는 기기 등)은 뺀다
+function formatTemps(t) {
+  const parts = [];
+  if (t.b != null) parts.push(`배터리 ${t.b}°C`);
+  if (t.c != null) parts.push(`CPU ${t.c}°C`);
+  if (t.k != null) parts.push(`표면 ${t.k}°C`);
+  return parts.length ? parts.join(' · ') : '온도 정보 없음';
+}
+// 시각 - 오늘이면 HH:MM, 아니면 M/D HH:MM
+function formatTime(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+function formatAgo(ms) {
+  const min = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (min < 1) return '방금';
+  if (min < 60) return `${min}분 전`;
+  return `${Math.floor(min / 60)}시간 ${min % 60}분 전`;
+}
+
 function setPill(el, cls, text) {
   el.className = `pill ${cls}`.trim();
   el.innerHTML = '<i></i>';
@@ -282,7 +336,11 @@ function applyStatusUpdate(data) {
   const fileCounts = { ok: 0, mismatch: 0, unknown: 0 };
   const versionCounts = { latest: 0, old: 0, unknown: 0 };
   const otaCounts = { idle: 0, downloading: 0, installing: 0, done: 0, failed: 0 };
-  const ids = { off: [], mis: [], perr: [], rerr: [], batt: [], low: [] };
+  const ids = { off: [], mis: [], perr: [], rerr: [], heat: [], kiosk: [], batt: [], low: [] };
+  const thermal = data.thermal || {};
+  const kiosk = data.kiosk || {};
+  const restarts = data.restarts || {};
+  const hotSet = new Set((data.hot || []).map(String));
 
   for (const id of Object.keys(data.devices)) {
     const status = data.devices[id];
@@ -319,6 +377,10 @@ function applyStatusUpdate(data) {
     if (pError) ids.perr.push(id);
     const rError = rebootError[id];
     if (rError) ids.rerr.push(id);
+    const hot = hotSet.has(id);
+    if (hot) ids.heat.push(id);
+    const kioskOff = Boolean(kiosk[id]);
+    if (kioskOff) ids.kiosk.push(id);
 
     if (cell) {
       cell.classList.toggle('mismatch', fStatus === 'mismatch');
@@ -326,6 +388,8 @@ function applyStatusUpdate(data) {
       cell.classList.toggle('battery-not-charging', batteryKey === 'notCharging');
       cell.classList.toggle('battery-low', batteryKey === 'low');
       cell.classList.toggle('player-error', Boolean(pError));
+      cell.classList.toggle('hot', hot);
+      cell.classList.toggle('kiosk-off', kioskOff);
 
       const tips = [`#${id} · ${status === 'online' ? '연결됨' : '연결 끊김'}`];
       if (b) tips.push(`배터리 ${b.pct}% (${b.charging ? '충전 중' : '충전 안 됨'})`);
@@ -336,6 +400,21 @@ function applyStatusUpdate(data) {
       }
       if (pError) tips.push(`재생 오류 - ${pError}`);
       if (rError) tips.push(`재부팅 요청 실패 - ${REBOOT_ERROR_LABEL[rError] || rError}`);
+      const t = thermal[id];
+      if (t && status === 'online') {
+        tips.push(`온도: ${formatTemps(t)}`);
+        tips.push(`발열 단계: ${THERMAL_LABEL[t.s] || t.s}${hot ? '  ⚠' : ''}`);
+      } else if (t) {
+        // 끊긴 폰은 마지막으로 받은 값 - 앱이 다시 켜지지 못했거나 폰이 꺼진 원인을 짐작하는 데 쓴다
+        tips.push(`마지막 보고 ${formatTime(t.at)} (${formatAgo(t.at)})`);
+        tips.push(`그때 상태: ${formatTemps(t)} · 발열 ${THERMAL_LABEL[t.s] || t.s}`);
+      }
+      if (kioskOff) tips.push(`키오스크 해제(현장 정비 중) - ${kiosk[id].since ? `${formatTime(kiosk[id].since)}부터` : ''}`);
+      const r = restarts[id];
+      if (r) {
+        tips.push(`최근 재시작 ${r.count}회(24시간) · 마지막 ${formatTime(r.last.at)} ${exitReasonLabel(r.last.reason)}`);
+        if (r.last.before) tips.push(`  └ 직전: ${formatTemps(r.last.before)} · 발열 ${THERMAL_LABEL[r.last.before.s] || '-'}`);
+      }
       cell.title = tips.join('\n');
     }
   }
@@ -352,6 +431,8 @@ function applyStatusUpdate(data) {
   }
 
   problemIds = ids;
+  restartIds = Object.keys(restarts).sort((a, b) => Number(a) - Number(b));
+  healthState = { thermal, kiosk, restarts };
   renderAlerts();
   applyFilter();
 
@@ -867,8 +948,9 @@ tgText.addEventListener('click', async () => {
 // ── 문제 알림 / 필터
 function renderAlerts() {
   const shown = PROBLEMS.filter((p) => problemIds[p.key].length > 0);
-  const signature = shown.map((p) => `${p.key}:${problemIds[p.key].length}`).join('|');
-  if (activeFilter && !shown.some((p) => p.key === activeFilter)) activeFilter = null;
+  const signature = `${shown.map((p) => `${p.key}:${problemIds[p.key].length}`).join('|')}|restart:${restartIds.length}`;
+  if (activeFilter && activeFilter !== 'restart' && !shown.some((p) => p.key === activeFilter)) activeFilter = null;
+  if (activeFilter === 'restart' && restartIds.length === 0) activeFilter = null;
   if (signature === lastAlertsSignature) {
     syncAlertPressed();
     return;
@@ -894,6 +976,21 @@ function renderAlerts() {
       alertsEl.appendChild(chip);
     });
   }
+  // "최근 재시작"은 지금 문제가 아니라 지난 기록 - 구분선 뒤 점선 칩으로 따로
+  if (restartIds.length > 0) {
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip k-restart';
+    chip.dataset.filter = 'restart';
+    chip.title = '최근 24시간 동안 저절로 다시 켜진 폰(원격 재시작·재부팅·앱 업데이트 제외)';
+    chip.innerHTML = '<span class="ico">↻</span>';
+    const count = document.createElement('b');
+    count.textContent = String(restartIds.length);
+    chip.append('최근 재시작 ', count);
+    alertsEl.append(sep, chip);
+  }
   syncAlertPressed();
 }
 
@@ -905,19 +1002,94 @@ function syncAlertPressed() {
 }
 
 // 누른 알림의 폰만 그리드에 남기고, 그 번호 목록을 보여준다.
+function filterIds(key) {
+  return key === 'restart' ? restartIds : problemIds[key];
+}
+
 function applyFilter() {
-  const set = activeFilter ? new Set(problemIds[activeFilter]) : null;
+  const set = activeFilter ? new Set(filterIds(activeFilter)) : null;
   Object.entries(cellRefs || {}).forEach(([id, cell]) => {
     cell.classList.toggle('dim', Boolean(set) && !set.has(id));
   });
   idListEl.hidden = !activeFilter;
   if (!activeFilter) return;
-  const p = PROBLEMS.find((x) => x.key === activeFilter);
+  const list = filterIds(activeFilter);
   const chip = alertsEl.querySelector(`[data-filter="${activeFilter}"]`);
   if (chip) idListEl.style.setProperty('--k', getComputedStyle(chip).getPropertyValue('--k'));
-  idListTitleEl.textContent = `${p.title} ${problemIds[activeFilter].length}대`;
-  idListNumsEl.textContent = problemIds[activeFilter].join(', ');
+  idListTitleEl.textContent = activeFilter === 'restart'
+    ? `최근 24시간 동안 저절로 다시 켜진 폰 ${list.length}대`
+    : `${PROBLEMS.find((x) => x.key === activeFilter).title} ${list.length}대`;
+  idListNumsEl.textContent = list.join(', ');
+  btnAckRestarts.hidden = activeFilter !== 'restart';
+  renderDetailTable(activeFilter, list);
 }
+
+// 표로 보여주는 알림(발열/키오스크 해제/최근 재시작) - 폰이 보낸 글(종료 설명 등)이 섞이므로
+// innerHTML 대신 textContent로 채운다.
+function renderDetailTable(key, list) {
+  const columns = {
+    heat: ['폰', '발열 단계', '배터리', 'CPU', '표면', '최근 재시작'],
+    kiosk: ['폰', '해제 시각', '자동 복귀'],
+    restart: ['폰', '횟수(24h)', '마지막', '종료 사유', '종료 직전 상태'],
+  }[key];
+  idListEl.classList.toggle('has-table', Boolean(columns));
+  idListTableEl.hidden = !columns;
+  idListFootEl.hidden = !columns;
+  if (!columns) return;
+
+  const { thermal, kiosk, restarts } = healthState;
+  const table = document.createElement('table');
+  const head = table.createTHead().insertRow();
+  columns.forEach((c) => { const th = document.createElement('th'); th.textContent = c; head.appendChild(th); });
+  const body = table.createTBody();
+  const cell = (row, text, cls) => {
+    const td = row.insertCell();
+    if (cls) td.className = cls;
+    if (text instanceof Node) td.appendChild(text); else td.textContent = text;
+    return td;
+  };
+  const tag = (text, cls) => Object.assign(document.createElement('span'), { className: `tag ${cls}`, textContent: text });
+  const temp = (v) => (v == null ? '-' : `${v}°C`);
+
+  list.forEach((id) => {
+    const row = body.insertRow();
+    cell(row, `#${id}`, 'num');
+    if (key === 'heat') {
+      const t = thermal[id] || {};
+      cell(row, tag(THERMAL_LABEL[t.s] || '-', t.s >= 3 ? 'heat' : 'warn'));
+      cell(row, temp(t.b)); cell(row, temp(t.c)); cell(row, temp(t.k));
+      const r = restarts[id];
+      cell(row, r ? `${r.count}회 · ${formatTime(r.last.at)}` : '-');
+    } else if (key === 'kiosk') {
+      const k = kiosk[id] || {};
+      cell(row, k.since ? `${formatTime(k.since)} (${formatAgo(k.since)})` : '-');
+      const leftMin = k.returnAt ? Math.max(0, Math.ceil((k.returnAt - Date.now()) / 60000)) : null;
+      cell(row, leftMin == null ? '-' : leftMin > 0 ? `${leftMin}분 뒤 앱으로 자동 복귀` : '곧 자동 복귀');
+    } else {
+      const r = restarts[id];
+      cell(row, `${r.count}회`);
+      cell(row, formatTime(r.last.at));
+      const reasonTd = cell(row, tag(exitReasonLabel(r.last.reason), exitReasonClass(r.last.reason)));
+      if (r.last.detail) reasonTd.title = r.last.detail;
+      const b = r.last.before;
+      cell(row, b ? `${formatTemps(b)} · 발열 ${THERMAL_LABEL[b.s] || '-'}` : '기록 없음', 'sub');
+    }
+  });
+  idListTableEl.replaceChildren(table);
+  idListFootEl.textContent = {
+    heat: '기준: 발열 단계 "심각" 이상 또는 배터리 45°C 이상. 기기가 CPU·표면 온도를 주지 않으면 "-"로 표시됩니다.',
+    kiosk: '폰에서 홈 버튼을 누르거나 [앱으로 돌아가기]를 누르면 바로 다시 잠깁니다.',
+    restart: '원격 앱 재시작·재부팅·앱 업데이트로 다시 켜진 경우는 여기에 나오지 않습니다(서버 기록에는 남음). '
+      + '[확인]을 누르면 지금까지의 재시작은 목록에서 빠지고, 이후 새로 생긴 것만 다시 나옵니다.',
+  }[key];
+}
+
+btnAckRestarts.addEventListener('click', async () => {
+  if (await post('/api/restarts/ack')) {
+    activeFilter = null;
+    showToast('최근 재시작 목록을 비웠습니다');
+  }
+});
 
 alertsEl.addEventListener('click', (e) => {
   const chip = e.target.closest('[data-filter]');

@@ -168,9 +168,12 @@
           <div class="id-list-actions">
             <button class="btn-sm" type="button" id="btn-copy-ids">번호 복사</button>
             <button class="btn-sm" type="button" id="btn-fill-ids">재시작·재부팅 칸에 넣기</button>
+            <button class="btn-sm green" type="button" id="btn-ack-restarts" hidden>확인 (목록 비우기)</button>
           </div>
         </div>
         <div class="id-list-nums" id="id-list-nums"></div>
+        <div class="id-list-table" id="id-list-table" hidden></div>
+        <div class="id-list-foot" id="id-list-foot" hidden></div>
       </div>
       <div class="legend">
         <span><i class="mini"></i>연결됨</span>
@@ -179,6 +182,8 @@
         <span><i class="mini perr"></i>재생 오류</span>
         <span><i class="mini batt"></i>충전 안 됨</span>
         <span><i class="mini low"></i>배터리 낮음(충전 중 20% 미만)</span>
+        <span><i class="mini heat"></i>발열(심각 이상 또는 배터리 45°C 이상)</span>
+        <span><i class="mini kiosk"></i>키오스크 해제(현장 정비 중)</span>
         <span class="alerts-hint">칸에 마우스를 올리면 자세한 상태가 보입니다</span>
       </div>
       <div id="device-grid" class="device-grid"></div>

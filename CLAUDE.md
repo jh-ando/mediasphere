@@ -141,6 +141,12 @@ MediaSphere/
 - wall/status/{id} : 폰 → 서버 (heartbeat, 5초마다)
                      versionCode/batteryPct/charging 외에, 문제가 있을 때만
                      playerError(ExoPlayer errorCodeName), rebootError(NOT_DEVICE_OWNER 등)
+                     발열: thermalStatus(0~6, PowerManager), batteryTemp, cpuTemp/skinTemp(°C,
+                     Device Owner 전용 HardwarePropertiesManager - 기기가 안 주면 생략)
+                     키오스크: kiosk(false면 현장 정비 중) + kioskSince/kioskReturnAt
+                     lastExit: 지난번 앱 종료 {reason(ApplicationExitInfo 사유 또는 DEVICE_REBOOT),
+                     at, detail, afterBoot, intentional(RESTART/REBOOT/UPDATE), before(종료 직전 온도)}
+                     - 다음 종료 전까지 계속 싣고 서버가 at으로 중복 제거(server/lib/deviceHealth.js)
 - wall/ready/{id}  : 폰 → 서버 (다운로드 완료) {"checksum":"sha256:..."}
 - wall/error/{id}  : 폰 → 서버 (영상 파일 오류) {"reason":...}
                      reason: DOWNLOAD_FAILED | CHECKSUM_MISMATCH | RENAME_FAILED
@@ -231,6 +237,10 @@ MediaSphere/
                  distribute/.staging에 하고 전부 성공하면 배포 폴더로 바꿔 넣는다 - 진행 중/실패/
                  취소 시 배포 폴더와 폰 파일은 그대로(교체 중엔 영상 두 벌만큼 디스크 사용)
 - POST /api/video/replace/cancel 진행 중인 영상 교체 취소 (step='cancelled', 실패 'error'와 구분)
+- POST /api/restarts/ack   대시보드 "최근 재시작" [확인] - 지금까지 기록을 알림에서 뺌(기록은 남음)
+- GET  /api/device-events?deviceId=N  한 폰의 앱 종료 기록(의도한 종료 포함, 최신순 100건).
+                 종료 기록은 data/device-events.json(7일/5000건). 대시보드 "발열" 기준은
+                 발열 단계 심각(3) 이상 또는 배터리 45°C 이상, "최근 재시작"은 의도하지 않은 종료 24시간
 - GET/POST /api/schedule   운영 시간 타이머 {"enabled","start":"HH:MM","end":"HH:MM","closedDays":[0~6]}
                  (data/schedule.json 저장, 서버 현지 시각 기준). 운영 시간 경계에서만 동작 -
                  시작: 전부 정지 후 영상 재생(배포 중이면 끝난 뒤), 종료: 전부 정지 후 절전.
@@ -406,6 +416,19 @@ MediaSphere/
   (밸런스 모드 전환 시 타임코드 지연 → 동기화 이탈 발생 확인됨)
 - 화면 잠금/절전 비활성화 필수
   (잠금화면 전환 시 일부 폰 동기화 이탈 가능성 있음)
+- 앱 자동 복구(Device Owner 폰만, 2026-10): 키오스크 잠금(Lock Task)만으로는 앱이 죽어도
+  다시 안 뜬다(에뮬레이터 확인 - 기본 홈 화면에 멈춤). 그래서 MainActivity를 고정 기본 홈 앱으로
+  등록하고(addPersistentPreferredActivity), 앱 안에서 띄울 때도 홈 인텐트로 띄운다(AppLaunch).
+  앱이 죽으면 시스템이 홈(=이 앱)을 2초 안에 다시 띄운다. 뒤에 다른 작업(정비 때 연 설정 화면,
+  고정 직후 남은 원래 런처)이 있으면 시스템이 그걸 보여주므로, 1분 주기 생존 확인 알람
+  (KeepAliveReceiver)이 1~2분 안에 다시 띄운다. 홈 고정을 처음 적용하는 OTA 뒤에는 원격 재부팅을
+  한 번 해서 원래 런처를 홈 목록에서 없애는 것을 권장(안 해도 알람이 1~2분 안에 복구).
+- MQTT 첫 연결: Paho 자동 재연결은 한 번 연결에 성공한 뒤에만 동작한다. 재부팅 직후처럼 Wi-Fi/서버가
+  준비되기 전에 앱이 켜지면 첫 연결이 실패한 채 영영 오프라인이었으므로(2026-10 확인), 첫 연결은
+  성공할 때까지 5초→최대 30초 간격으로 직접 다시 시도한다(MqttManager.connect).
+- 현장 정비: 화면 왼쪽 위 구석을 빠르게 5번 탭 → 정비 메뉴([설정 열기]/[앱으로 돌아가기]).
+  설정 화면에서 홈 버튼을 누르면 앱으로 돌아와 다시 잠기고, 10분 동안 안 돌아오면 자동 복귀.
+  정비 중엔 대시보드에 "키오스크 해제"로 뜬다. 홈 고정은 정비 중에도 풀지 않는다.
 
 ## Git 규칙
 각 기능 완성 후 내가 "커밋해줘"라고 하면

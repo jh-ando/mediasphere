@@ -28,7 +28,8 @@ class RestartBridgeActivity : Activity() {
         // MainActivity의 원래 프로세스가 완전히 종료될 시간을 잠깐 준다.
         Handler(Looper.getMainLooper()).postDelayed({
             Log.d(TAG, "MainActivity 재실행")
-            val intent = Intent(this, MainActivity::class.java).apply {
+            // 기본 홈 앱으로 고정돼 있으면 홈 방식으로 띄운다(AppLaunch 참고)
+            val intent = AppLaunch.mainIntent(this).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             }
             startActivity(intent)
