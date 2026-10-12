@@ -40,6 +40,7 @@ import com.mediasphere.client.health.AppHealth
 import com.mediasphere.client.mqtt.MqttControlMessage
 import com.mediasphere.client.mqtt.MqttManager
 import com.mediasphere.client.network.TimecodeReceiver
+import com.mediasphere.client.network.WifiWatchdog
 import com.mediasphere.client.pattern.PatternAnimator
 import com.mediasphere.client.pattern.TextPatternAnimator
 import com.mediasphere.client.sync.DriftCorrector
@@ -394,6 +395,9 @@ class MainActivity : ComponentActivity() {
 
         // 앱이 죽었는데 시스템이 다시 안 띄우는 경우(뒤에 다른 화면이 남아 있을 때 등)를 위한 안전망
         KeepAliveReceiver.schedule(applicationContext)
+
+        // Wi-Fi가 "비밀번호 오류"로 자동 연결이 멈춘 채 끊겨 있으면 앱이 다시 연결한다(Device Owner 폰만)
+        WifiWatchdog.start(applicationContext, mqttManager.deviceId())
 
         // 지난번에 앱이 왜 끝났는지 판정해서 heartbeat로 보고한다(대시보드 "최근 재시작").
         lifecycleScope.launch(Dispatchers.IO) {

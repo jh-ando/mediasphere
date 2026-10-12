@@ -5,6 +5,7 @@ import android.os.BatteryManager
 import android.util.Log
 import com.mediasphere.client.BuildConfig
 import com.mediasphere.client.health.AppHealth
+import com.mediasphere.client.network.WifiWatchdog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -650,6 +651,9 @@ class MqttManager(
                 if (heartbeatCount++ % THERMAL_SNAPSHOT_EVERY == 0) AppHealth.saveSnapshot(context, thermal)
             }
             lastExit?.let { put("lastExit", it) }
+            // Wi-Fi 연결(SSID·신호 세기)과 지난번 끊김 기록 - 대시보드 기기 툴팁용(WifiWatchdog 참고)
+            runCatching { WifiWatchdog.currentInfo(context) }.getOrNull()?.let { put("wifi", it) }
+            WifiWatchdog.lastDrop?.let { put("lastWifiDrop", it) }
             // 키오스크 잠금 상태 - 현장 정비 메뉴로 풀려 있으면 대시보드에 "키오스크 해제"로 뜬다
             val unlockedAt = kioskUnlockedAt
             put("kiosk", unlockedAt == null)

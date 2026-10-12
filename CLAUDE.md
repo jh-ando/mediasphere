@@ -153,6 +153,9 @@ MediaSphere/
                      lastExit: 지난번 앱 종료 {reason(ApplicationExitInfo 사유 또는 DEVICE_REBOOT),
                      at, detail, afterBoot, intentional(RESTART/REBOOT/UPDATE), before(종료 직전 온도)}
                      - 다음 종료 전까지 계속 싣고 서버가 at으로 중복 제거(server/lib/deviceHealth.js)
+                     Wi-Fi: wifi {rssi, ssid?(위치 권한 있을 때만)}, lastWifiDrop {at, durationMs,
+                     attempts(앱 재연결 시도 횟수, 0=안드로이드가 스스로 붙음), wifiWasOff?, error?}
+                     - 끊긴 동안엔 못 보내므로 다시 붙은 뒤 사후 보고, lastExit와 같은 중복 제거
 - wall/ready/{id}  : 폰 → 서버 (다운로드 완료) {"checksum":"sha256:..."}
 - wall/error/{id}  : 폰 → 서버 (영상 파일 오류) {"reason":...}
                      reason: DOWNLOAD_FAILED | CHECKSUM_MISMATCH | RENAME_FAILED
@@ -271,7 +274,7 @@ MediaSphere/
 - Node.js: CommonJS (require), async/await
 - Kotlin: Coroutine 기반 비동기
 - 주석: 한국어
-- 로그 태그: [UDP] [MQTT] [HTTP] [Player] [Pattern]
+- 로그 태그: [UDP] [MQTT] [HTTP] [Player] [Pattern] [WiFi] 등 (전체 목록은 docs/개발문서/04 9장)
 
 ## 개발 단계
 - [x] Phase 0: 테스트 앱 성능 검증
@@ -432,6 +435,14 @@ MediaSphere/
 - MQTT 첫 연결: Paho 자동 재연결은 한 번 연결에 성공한 뒤에만 동작한다. 재부팅 직후처럼 Wi-Fi/서버가
   준비되기 전에 앱이 켜지면 첫 연결이 실패한 채 영영 오프라인이었으므로(2026-10 확인), 첫 연결은
   성공할 때까지 5초→최대 30초 간격으로 직접 다시 시도한다(MqttManager.connect).
+- Wi-Fi 감시(WifiWatchdog, Device Owner 폰만, 2026-10): AP 혼잡·재시작 때 접속 인증이 연속 실패하면
+  안드로이드가 "비밀번호가 잘못되었습니다"로 판단해 자동 연결을 멈추고 사람이 다시 탭할 때까지 안 붙는다
+  (현장 확인). 이러면 원격 복구 수단이 다 무력하므로, 끊긴 지 60초 + deviceId 시차(0~29초) 뒤 저장된
+  네트워크로 연결을 지시하고(enableNetwork(id, true) - false로 "사용함"만 바꾸면 막힌 네트워크는 안 붙음,
+  에뮬레이터 확인) 1분→2분→5분 간격으로 계속 시도한다. 현장 정비 중엔 손대지 않는다. adb로 등록한
+  Device Owner는 Android 12+에서 위치 권한을 스스로 줄 수 없어(Admin can grant sensors permission:
+  false) 저장 목록·SSID를 못 읽으므로, 0~31번을 두드려 저장된 번호를 찾아 연결한다 - 폰마다 Wi-Fi를
+  하나만 저장해 두는 구성이 전제. One UI의 "비밀번호 오류" 표시가 이걸로 풀리는지는 실기기 확인 필요.
 - 현장 정비: 화면 왼쪽 위 구석을 빠르게 5번 탭 → 정비 메뉴([설정 열기]/[앱으로 돌아가기]).
   설정 화면에서 홈 버튼을 누르면 앱으로 돌아와 다시 잠기고, 10분 동안 안 돌아오면 자동 복귀.
   정비 중엔 대시보드에 "키오스크 해제"로 뜬다. 홈 고정은 정비 중에도 풀지 않는다.

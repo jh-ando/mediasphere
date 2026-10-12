@@ -48,10 +48,12 @@ function hb(id, extra) {
     const before = { at: now - 60_000, thermalStatus: 3, batteryTemp: 47, cpuTemp: 71.2, skinTemp: 44 };
     // 1번: 정상 온도 / 2번: 발열 단계 심각 / 3번: 배터리 46°C(단계는 보통) / 4번: 키오스크 해제
     // 5번: 발열로 죽었다 다시 켜짐(SIGNALED) / 6번: 원격 재시작(의도) / 7번: 구버전 앱(새 필드 없음)
+    // Wi-Fi: 1번 신호+SSID / 2번 신호만(위치 권한 없음 → SSID 없음) / 3번 끊겼다가 앱이 다시 연결
+    const wifiDrop = { at: now - 90_000, durationMs: 185_000, attempts: 2 };
     const send = () => {
-      hb(1, { thermalStatus: 0, batteryTemp: 33.5, cpuTemp: 48, skinTemp: 31 });
-      hb(2, { thermalStatus: 3, batteryTemp: 41 });
-      hb(3, { thermalStatus: 2, batteryTemp: 46.1 });
+      hb(1, { thermalStatus: 0, batteryTemp: 33.5, cpuTemp: 48, skinTemp: 31, wifi: { ssid: 'MEDIA_01', rssi: -58 } });
+      hb(2, { thermalStatus: 3, batteryTemp: 41, wifi: { rssi: -77 } });
+      hb(3, { thermalStatus: 2, batteryTemp: 46.1, lastWifiDrop: wifiDrop });
       hb(4, { thermalStatus: 1, batteryTemp: 36, kiosk: false, kioskSince: now - 180_000, kioskReturnAt: now + 420_000 });
       hb(5, { thermalStatus: 1, batteryTemp: 39, lastExit: { reason: 'SIGNALED', at: now - 30_000, afterBoot: false, before } });
       hb(6, { thermalStatus: 0, batteryTemp: 35, lastExit: { reason: 'EXIT_SELF', at: now - 20_000, intentional: 'RESTART' } });
@@ -69,6 +71,13 @@ function hb(id, extra) {
     check('구버전 앱(7번)은 새 항목 없이 정상', st.devices['7'] === 'online' && !st.thermal['7'] && !st.kiosk['7']);
     const saved = JSON.parse(fs.readFileSync(EVENTS, 'utf-8'));
     check('종료 기록 파일 저장(중복 없이 2건: 5번·6번)', saved.events.length === 2 && saved.events.some((e) => e.deviceId === '6' && e.intentional === 'RESTART'), `${saved.events.length}건`);
+    check('Wi-Fi 신호·SSID 저장(1번)', st.wifi['1'] && st.wifi['1'].r === -58 && st.wifi['1'].s === 'MEDIA_01', JSON.stringify(st.wifi['1']));
+    check('Wi-Fi SSID 없으면 신호만(2번)', st.wifi['2'] && st.wifi['2'].r === -77 && st.wifi['2'].s === null, JSON.stringify(st.wifi['2']));
+    check('Wi-Fi 끊김 = 3번만, 1회(중복 없이)·앱 시도 2회', Object.keys(st.wifiDrops).join() === '3' && st.wifiDrops['3'].count === 1
+      && st.wifiDrops['3'].last.attempts === 2 && st.wifiDrops['3'].last.durationMs === 185_000, JSON.stringify(st.wifiDrops));
+    check('Wi-Fi 끊김 파일 저장 1건 + 최근 재시작에는 안 섞임', saved.wifiDrops.length === 1 && !st.restarts['3'], `${saved.wifiDrops.length}건`);
+    const wev = await (await fetch(`${BASE}/api/device-events?deviceId=3`)).json();
+    check('이력 조회 API에 Wi-Fi 끊김 포함', wev.ok && wev.wifiDrops.length === 1 && wev.events.length === 0, JSON.stringify(wev));
 
     // 키오스크 다시 잠김 → 해제 목록에서 빠짐
     hb(4, { thermalStatus: 1, batteryTemp: 36, kiosk: true }); await fresh(); await fresh();
@@ -94,6 +103,11 @@ function hb(id, extra) {
     hb(5, { thermalStatus: 1, batteryTemp: 39, lastExit: { reason: 'LOW_MEMORY', at: now - 5_000, afterBoot: false } });
     await fresh(); await fresh();
     check('서버 재시작 후 최근 재시작 유지 + 중복 없음', st.restarts['5'] && st.restarts['5'].count === 2, JSON.stringify(st.restarts['5']));
+    hb(3, { thermalStatus: 1, batteryTemp: 36, lastWifiDrop: wifiDrop }); await fresh(); await fresh();
+    check('서버 재시작 후 같은 Wi-Fi 끊김 다시 와도 1회', st.wifiDrops['3'] && st.wifiDrops['3'].count === 1, JSON.stringify(st.wifiDrops['3']));
+    hb(3, { thermalStatus: 1, batteryTemp: 36, lastWifiDrop: { at: Date.now() - 20_000, durationMs: 12_000, attempts: 0 } });
+    await fresh(); await fresh();
+    check('새 Wi-Fi 끊김 → 2회, 마지막 = 스스로 재연결(시도 0)', st.wifiDrops['3'].count === 2 && st.wifiDrops['3'].last.attempts === 0, JSON.stringify(st.wifiDrops['3']));
 
     // [확인] → 목록 비움, 이후 새 종료만 다시 나옴
     const ack = await post('/api/restarts/ack');

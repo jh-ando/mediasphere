@@ -1848,14 +1848,16 @@ app.post('/api/restarts/ack', (req, res) => {
   res.json({ ok: true });
 });
 
-// 한 폰의 앱 종료 기록(원격 재시작·재부팅·OTA 같은 의도한 종료 포함) - 최신순 최대 100건
+// 한 폰의 앱 종료 기록(원격 재시작·재부팅·OTA 같은 의도한 종료 포함)과 Wi-Fi 끊김 기록 - 각각 최신순 최대 100건
 app.get('/api/device-events', (req, res) => {
   const deviceId = Number(req.query.deviceId);
   if (!Number.isInteger(deviceId) || deviceId <= 0) {
     res.status(400).json({ ok: false, error: 'deviceId(양의 정수)가 필요합니다.' });
     return;
   }
-  res.json({ ok: true, deviceId, events: deviceHealth.eventsFor(deviceId) });
+  res.json({
+    ok: true, deviceId, events: deviceHealth.eventsFor(deviceId), wifiDrops: deviceHealth.wifiDropsFor(deviceId),
+  });
 });
 
 app.post('/api/distribute/publish', (req, res) => {
@@ -2551,7 +2553,7 @@ function buildStatusPayload() {
     otaStatus,
     versions,
     battery,
-    // thermal, hot, kiosk, restarts, restartAckAt
+    // thermal, hot, kiosk, restarts, restartAckAt, wifi, wifiDrops
     ...deviceHealth.buildPayload((id) => isDeviceOnline(id), Date.now()),
     latestVersionCode: appVersion ? appVersion.versionCode : null,
     deploy: buildDeployProgress(),

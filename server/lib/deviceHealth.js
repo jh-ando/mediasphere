@@ -1,7 +1,8 @@
-// MediaSphere - 기기 건강 상태 (발열·키오스크 해제·앱 종료 기록)
+// MediaSphere - 기기 건강 상태 (발열·키오스크 해제·앱 종료 기록·Wi-Fi)
 //
 // 폰 heartbeat(wall/status/{id})에 실려오는 온도, 현장 정비(키오스크 해제) 상태, 지난번 앱
-// 종료 정보(lastExit)를 모아 대시보드 "발열"/"키오스크 해제"/"최근 재시작" 표시에 쓴다.
+// 종료 정보(lastExit), Wi-Fi 신호와 지난번 끊김(lastWifiDrop)을 모아 대시보드 "발열"/
+// "키오스크 해제"/"최근 재시작" 표시와 기기 툴팁에 쓴다.
 // 앱이 죽으면 그동안은 보고를 못 하므로, 폰은 다시 켜졌을 때 "왜 죽었는지 + 죽기 직전 온도"를
 // lastExit로 다음 종료 전까지 계속 싣는다 - 여기서 at(종료 시각)으로 중복을 거르고 파일에 남긴다.
 'use strict';
@@ -16,6 +17,8 @@ const HEAT_BATTERY_TEMP_MIN = 45;
 const RESTART_WINDOW_MS = 24 * 60 * 60 * 1000;
 const EVENT_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const EVENT_MAX = 5000;
+// 기기 툴팁의 "Wi-Fi 끊김 N회"를 세는 기간
+const WIFI_DROP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
@@ -29,10 +32,15 @@ function createDeviceHealth(filePath) {
   const thermal = {};
   // deviceId -> { since, returnAt } - 현장 정비 메뉴로 키오스크가 풀린 폰
   const kiosk = {};
-  // 파일에 남기는 것: ackAt(대시보드 [확인]을 누른 시각) + 종료 기록 목록
-  let store = { ackAt: 0, events: [] };
+  // deviceId -> 마지막으로 보고된 Wi-Fi { r: 신호 세기(dBm), s: SSID, at }. 끊겨도 지우지 않는다 -
+  // 끊기기 직전 신호가 약했는지 보는 데 쓴다.
+  const wifi = {};
+  // 파일에 남기는 것: ackAt(대시보드 [확인]을 누른 시각) + 종료 기록 목록 + Wi-Fi 끊김 기록
+  let store = { ackAt: 0, events: [], wifiDrops: [] };
   // deviceId -> 이미 기록한 마지막 종료 시각 - heartbeat마다 같은 lastExit가 오므로 중복 제거용
   const lastExitAt = {};
+  // deviceId -> 이미 기록한 마지막 Wi-Fi 끊김 시각 - lastWifiDrop도 다음 끊김 전까지 계속 오므로
+  const lastWifiDropAt = {};
 
   function load() {
     if (!fs.existsSync(filePath)) return;
@@ -41,9 +49,13 @@ function createDeviceHealth(filePath) {
       store = {
         ackAt: num(loaded.ackAt) || 0,
         events: Array.isArray(loaded.events) ? loaded.events : [],
+        wifiDrops: Array.isArray(loaded.wifiDrops) ? loaded.wifiDrops : [],
       };
       store.events.forEach((e) => {
         if (!(lastExitAt[e.deviceId] >= e.at)) lastExitAt[e.deviceId] = e.at;
+      });
+      store.wifiDrops.forEach((d) => {
+        if (!(lastWifiDropAt[d.deviceId] >= d.at)) lastWifiDropAt[d.deviceId] = d.at;
       });
     } catch (err) {
       console.error('[HTTP] device-events.json 읽기 실패 - 빈 기록으로 시작:', err.message);
@@ -62,6 +74,8 @@ function createDeviceHealth(filePath) {
   function prune(now) {
     store.events = store.events.filter((e) => now - e.receivedAt < EVENT_KEEP_MS);
     if (store.events.length > EVENT_MAX) store.events = store.events.slice(-EVENT_MAX);
+    store.wifiDrops = store.wifiDrops.filter((d) => now - d.receivedAt < EVENT_KEEP_MS);
+    if (store.wifiDrops.length > EVENT_MAX) store.wifiDrops = store.wifiDrops.slice(-EVENT_MAX);
   }
 
   // heartbeat 한 건 반영. 구버전 앱은 새 필드가 없을 뿐이라 그대로 무시된다.
@@ -71,6 +85,27 @@ function createDeviceHealth(filePath) {
       thermal[id] = {
         s: msg.thermalStatus, b: num(msg.batteryTemp), c: num(msg.cpuTemp), k: num(msg.skinTemp), at: now,
       };
+    }
+    if (msg.wifi && typeof msg.wifi === 'object' && typeof msg.wifi.rssi === 'number') {
+      wifi[id] = { r: msg.wifi.rssi, s: typeof msg.wifi.ssid === 'string' ? msg.wifi.ssid : null, at: now };
+    }
+    // Wi-Fi 끊김은 끊긴 동안엔 보고할 수 없어서 다시 붙은 뒤 사후 보고된다(WifiWatchdog.kt)
+    const drop = msg.lastWifiDrop;
+    if (drop && typeof drop.at === 'number' && typeof drop.durationMs === 'number'
+      && !(lastWifiDropAt[id] >= drop.at)) {
+      lastWifiDropAt[id] = drop.at;
+      store.wifiDrops.push({
+        deviceId: id,
+        at: drop.at,
+        durationMs: drop.durationMs,
+        attempts: num(drop.attempts) || 0,
+        wifiWasOff: drop.wifiWasOff === true,
+        error: typeof drop.error === 'string' ? drop.error.slice(0, 50) : null,
+        receivedAt: now,
+      });
+      prune(now);
+      save();
+      console.log(`[MQTT] Wi-Fi 끊김 기록 - device ${id} ${Math.round(drop.durationMs / 1000)}초, 앱 재연결 시도 ${num(drop.attempts) || 0}회 at=${new Date(drop.at).toISOString()}`);
     }
     if (msg.kiosk === false) {
       kiosk[id] = { since: num(msg.kioskSince), returnAt: num(msg.kioskReturnAt) };
@@ -118,8 +153,19 @@ function createDeviceHealth(filePath) {
         r.last = { reason: e.reason, at: e.at, detail: e.detail, afterBoot: e.afterBoot, before: e.before };
       }
     });
+    // 24시간 안의 Wi-Fi 끊김 - 기기 툴팁용 (count, 마지막 끊김)
+    const wifiDrops = {};
+    store.wifiDrops.forEach((d) => {
+      if (now - d.at > WIFI_DROP_WINDOW_MS) return;
+      const w = wifiDrops[d.deviceId] || (wifiDrops[d.deviceId] = { count: 0, last: null });
+      w.count += 1;
+      if (!w.last || d.at > w.last.at) {
+        w.last = { at: d.at, durationMs: d.durationMs, attempts: d.attempts, wifiWasOff: d.wifiWasOff, error: d.error };
+      }
+    });
     return {
       thermal, hot: hot.sort((a, b) => a - b), kiosk: kioskOnline, restarts, restartAckAt: store.ackAt,
+      wifi, wifiDrops,
     };
   }
 
@@ -135,8 +181,16 @@ function createDeviceHealth(filePath) {
     return store.events.filter((e) => e.deviceId === id).sort((a, b) => b.at - a.at).slice(0, limit);
   }
 
+  // 한 폰의 Wi-Fi 끊김 기록 - 최신순
+  function wifiDropsFor(deviceId, limit = 100) {
+    const id = String(deviceId);
+    return store.wifiDrops.filter((d) => d.deviceId === id).sort((a, b) => b.at - a.at).slice(0, limit);
+  }
+
   load();
-  return { onHeartbeat, buildPayload, ack, eventsFor };
+  return { onHeartbeat, buildPayload, ack, eventsFor, wifiDropsFor };
 }
 
-module.exports = { createDeviceHealth, HEAT_STATUS_MIN, HEAT_BATTERY_TEMP_MIN, RESTART_WINDOW_MS };
+module.exports = {
+  createDeviceHealth, HEAT_STATUS_MIN, HEAT_BATTERY_TEMP_MIN, RESTART_WINDOW_MS, WIFI_DROP_WINDOW_MS,
+};

@@ -18,6 +18,12 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 기기 재부팅 후 BootReceiver가 앱을 자동 실행하기 위해 필요 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Wi-Fi 감시(WifiWatchdog): 끊긴 Wi-Fi를 다시 켜고 연결 지시(Device Owner라 허용됨).
+         저장된 Wi-Fi 목록과 SSID를 읽으려면 위치 권한이 필요하다 - Device Owner가 스스로 허용한다 -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:usesCleartextTraffic="true"

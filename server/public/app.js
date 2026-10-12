@@ -287,6 +287,19 @@ function formatTime(ms) {
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
+// 짧은 시간 - Wi-Fi 끊김처럼 초 단위일 수 있는 길이
+function formatSpan(ms) {
+  const sec = Math.round((ms || 0) / 1000);
+  if (sec < 60) return `${sec}초`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}분 ${sec % 60}초`;
+  return `${Math.floor(min / 60)}시간 ${min % 60}분`;
+}
+// Wi-Fi 신호 세기(dBm) 한 줄 - 기준은 현장 데이터 보고 조정
+function formatWifi(w) {
+  const label = w.r >= -60 ? '좋음' : w.r >= -70 ? '보통' : '약함';
+  return `${w.s ? `${w.s} · ` : ''}신호 ${w.r} dBm (${label})`;
+}
 function formatAgo(ms) {
   const min = Math.max(0, Math.round((Date.now() - ms) / 60000));
   if (min < 1) return '방금';
@@ -342,6 +355,8 @@ function applyStatusUpdate(data) {
   const thermal = data.thermal || {};
   const kiosk = data.kiosk || {};
   const restarts = data.restarts || {};
+  const wifi = data.wifi || {};
+  const wifiDrops = data.wifiDrops || {};
   const hotSet = new Set((data.hot || []).map(String));
 
   for (const id of Object.keys(data.devices)) {
@@ -410,6 +425,13 @@ function applyStatusUpdate(data) {
         // 끊긴 폰은 마지막으로 받은 값 - 앱이 다시 켜지지 못했거나 폰이 꺼진 원인을 짐작하는 데 쓴다
         tips.push(`마지막 보고 ${formatTime(t.at)} (${formatAgo(t.at)})`);
         tips.push(`그때 상태: ${formatTemps(t)} · 발열 ${THERMAL_LABEL[t.s] || t.s}`);
+      }
+      const w = wifi[id];
+      if (w) tips.push(status === 'online' ? `Wi-Fi: ${formatWifi(w)}` : `끊기기 전 Wi-Fi: ${formatWifi(w)}`);
+      const wd = wifiDrops[id];
+      if (wd) {
+        const how = wd.last.attempts > 0 ? `앱이 다시 연결(시도 ${wd.last.attempts}회)` : '스스로 다시 연결';
+        tips.push(`Wi-Fi 끊김 ${wd.count}회(24시간) · 마지막 ${formatTime(wd.last.at)} ${formatSpan(wd.last.durationMs)} · ${how}`);
       }
       if (kioskOff) tips.push(`키오스크 해제(현장 정비 중) - ${kiosk[id].since ? `${formatTime(kiosk[id].since)}부터` : ''}`);
       const r = restarts[id];
